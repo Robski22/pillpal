@@ -748,7 +748,7 @@ export default function Home() {
         )
       }, 3000)
 
-    } catch (error: any) {
+      } catch (error: any) {
       console.error('Error dispensing:', error)
       alert(`❌ Error: ${error.message}`)
       // Log manual dispense error
@@ -761,7 +761,7 @@ export default function Home() {
             medication_name: servos.find(s => s.id === servoId)?.medication || '',
             action: 'manual',
             status: 'error',
-            notes: String(error?.message || 'Manual dispense error')
+            notes: error instanceof Error ? error.message : (error?.message || 'Manual dispense error')
           })
         }
       } catch (logErr) {

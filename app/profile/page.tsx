@@ -547,7 +547,8 @@ export default function Profile() {
           .from('account_members')
           .select('owner_user_id, id')
           .eq('member_user_id', profileData.id)
-        allExistingRelationships = allRelationshipsNoStatus
+        // Map to include default status for compatibility
+        allExistingRelationships = allRelationshipsNoStatus?.map(rel => ({ ...rel, status: 'accepted' as const })) || null
         checkError = null
       }
 
@@ -620,7 +621,7 @@ export default function Profile() {
         .eq('owner_user_id', ownerUserId)
 
       // If status column exists, filter by accepted status
-      if (currentCount !== undefined && currentCount > 0) {
+      if (currentCount !== undefined && currentCount !== null && currentCount > 0) {
         try {
           const { count: acceptedCount } = await supabase
             .from('account_members')
@@ -635,7 +636,7 @@ export default function Profile() {
           }
         } catch (statusError: any) {
           // Status column doesn't exist, use total count
-          if (currentCount >= 1) {
+          if (currentCount !== null && currentCount >= 1) {
             alert('❌ You already have a caregiver. Please refresh and remove the existing one first.')
             await fetchCaregivers()
             return

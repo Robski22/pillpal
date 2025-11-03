@@ -205,7 +205,7 @@ export default function Home() {
                   medication_name: servo.medication,
                   action: 'auto',
                   status: 'error',
-                  notes: String(error?.message || 'Auto-dispense error')
+                  notes: error instanceof Error ? error.message : 'Auto-dispense error'
                 })
               }
             } catch (logErr) {

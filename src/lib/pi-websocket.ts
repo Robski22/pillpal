@@ -7,14 +7,18 @@ let connected = false
 // Defaults to local development IP if not set
 const PI_URL = process.env.NEXT_PUBLIC_PI_WEBSOCKET_URL || 'ws://192.168.1.45:8765'
 
+// Log which URL we're using (for debugging)
+console.log('🔧 Using WebSocket URL:', PI_URL || 'Not set!')
+
 export function connectToPi(): Promise<void> {
   return new Promise((resolve, reject) => {
     if (ws?.readyState === WebSocket.OPEN) {
+      console.log('✅ Already connected to Pi')
       resolve()
       return
     }
 
-    console.log('🔌 Connecting to Pi...')
+    console.log('🔌 Connecting to Pi at:', PI_URL)
     ws = new WebSocket(PI_URL)
 
     ws.onopen = () => {
@@ -55,7 +59,16 @@ export function isConnectedToPi(): boolean {
 export function dispenseToPi(servoId: string, medication: string): Promise<any> {
   return new Promise((resolve, reject) => {
     if (!ws || !connected) {
+      console.error('❌ Cannot dispense: Not connected to Pi!')
+      console.error('   WebSocket state:', ws?.readyState, 'Connected:', connected)
       reject(new Error('Not connected to Pi!'))
+      return
+    }
+
+    if (ws.readyState !== WebSocket.OPEN) {
+      console.error('❌ Cannot dispense: WebSocket not open!')
+      console.error('   WebSocket state:', ws.readyState)
+      reject(new Error('WebSocket not open!'))
       return
     }
 
@@ -65,16 +78,23 @@ export function dispenseToPi(servoId: string, medication: string): Promise<any> 
       medication: medication
     })
 
+    console.log('📤 Sending dispense command:', message)
     ws.send(message)
     
-    const timeout = setTimeout(() => reject(new Error('Timeout')), 10000)
+    const timeout = setTimeout(() => {
+      console.error('❌ Dispense timeout - no response from Pi')
+      reject(new Error('Timeout - Pi did not respond'))
+    }, 10000)
     
     const originalHandler = ws.onmessage
     ws.onmessage = (event) => {
       clearTimeout(timeout)
       try {
-        resolve(JSON.parse(event.data))
+        const response = JSON.parse(event.data)
+        console.log('✅ Dispense response received:', response)
+        resolve(response)
       } catch (error) {
+        console.error('❌ Error parsing response:', error)
         reject(error)
       }
       ws!.onmessage = originalHandler

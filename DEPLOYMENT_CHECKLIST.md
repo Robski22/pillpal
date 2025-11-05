@@ -72,3 +72,4 @@ Get these from **Supabase Dashboard → Settings → API**:
 - ✅ All code is committed locally
 - ⏳ Next: Configure git user, then push to GitHub
 
+

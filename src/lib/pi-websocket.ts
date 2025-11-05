@@ -56,6 +56,16 @@ export function isConnectedToPi(): boolean {
   return connected && ws?.readyState === WebSocket.OPEN
 }
 
+// Expose connection function globally for debugging
+if (typeof window !== 'undefined') {
+  (window as any).connectToPi = connectToPi;
+  (window as any).checkPiConnection = () => {
+    console.log('WebSocket state:', ws?.readyState);
+    console.log('Connected:', connected);
+    console.log('URL:', PI_URL);
+  };
+}
+
 export function dispenseToPi(servoId: string, medication: string): Promise<any> {
   return new Promise((resolve, reject) => {
     if (!ws || !connected) {

@@ -1011,7 +1011,7 @@ export default function Home() {
           : 'bg-yellow-100 text-yellow-800 border-yellow-300'
       } border-2`}>
         {piConnected ? (
-          <>✅ Connected to Raspberry Pi (192.168.1.45)</>
+          <>✅ Connected to Raspberry Pi</>
         ) : (
           <>⚠️ Raspberry Pi offline - Dispensing disabled</>
         )}

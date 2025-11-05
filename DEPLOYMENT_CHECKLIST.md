@@ -73,3 +73,4 @@ Get these from **Supabase Dashboard → Settings → API**:
 - ⏳ Next: Configure git user, then push to GitHub
 
 
+

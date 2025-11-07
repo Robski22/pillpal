@@ -42,6 +42,22 @@ export default function Home() {
   })
   // Caregiver access disabled temporarily to fix signup
 
+  // Check for password reset hash fragment and redirect to reset-password page
+  useEffect(() => {
+    // Check if there's a hash fragment in the URL (from password reset email)
+    if (typeof window !== 'undefined') {
+      const hashParams = new URLSearchParams(window.location.hash.substring(1))
+      const type = hashParams.get('type')
+      
+      if (type === 'recovery') {
+        // This is a password reset link - redirect to reset-password page with the hash
+        const hash = window.location.hash
+        router.replace(`/reset-password${hash}`)
+        return
+      }
+    }
+  }, [router])
+
   // Connect to Raspberry Pi on page load
   useEffect(() => {
     connectToPi()

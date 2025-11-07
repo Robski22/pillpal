@@ -4,6 +4,18 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../../src/lib/supabase'
 import { useRouter } from 'next/navigation'
 
+// Helper function to get the correct redirect URL
+function getRedirectUrl(path: string = ''): string | undefined {
+  if (typeof window === 'undefined') return undefined
+  
+  // Use environment variable if set (for production), otherwise use window.location.origin
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || window.location.origin
+  const redirectUrl = `${baseUrl}${path}`
+  
+  console.log('🔗 Using redirect URL:', redirectUrl)
+  return redirectUrl
+}
+
 export default function Login() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -190,7 +202,7 @@ export default function Login() {
                       type: 'signup',
                       email: email,
                       options: {
-                        emailRedirectTo: typeof window !== 'undefined' ? `${window.location.origin}` : undefined,
+                        emailRedirectTo: getRedirectUrl(),
                       }
                     })
                     
@@ -201,7 +213,7 @@ export default function Login() {
                         email: email,
                         password: password,
                         options: {
-                          emailRedirectTo: typeof window !== 'undefined' ? `${window.location.origin}` : undefined,
+                          emailRedirectTo: getRedirectUrl(),
                         }
                       })
                       
@@ -260,7 +272,7 @@ export default function Login() {
                   setResetLoading(true)
                   const targetEmail = email || resetEmail
                   const { error } = await supabase.auth.resetPasswordForEmail(targetEmail, {
-                    redirectTo: typeof window !== 'undefined' ? `${window.location.origin}/reset-password` : undefined,
+                    redirectTo: getRedirectUrl('/reset-password'),
                   })
                   if (error) throw error
                   alert('Password reset email sent. Check your inbox!')

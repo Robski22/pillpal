@@ -2,24 +2,37 @@
 
 let ws: WebSocket | null = null
 let connected = false
+let reconnectAttempts = 0
+const MAX_RECONNECT_ATTEMPTS = 5
 
-// Pi WebSocket URL - can be set via environment variable for deployment
-// Defaults to local development IP if not set
-const PI_URL = process.env.NEXT_PUBLIC_PI_WEBSOCKET_URL || 'ws://192.168.1.45:8765'
+// Fetch WebSocket URL from API at runtime (not build-time!)
+async function getWebSocketUrl(): Promise<string> {
+  try {
+    const response = await fetch('/api/pi-url')
+    const data = await response.json()
+    console.log('✔ Using WebSocket URL:', data.url)
+    return data.url || process.env.NEXT_PUBLIC_PI_WEBSOCKET_URL || 'ws://192.168.1.45:8765'
+  } catch (error) {
+    console.error('Error fetching WebSocket URL:', error)
+    return process.env.NEXT_PUBLIC_PI_WEBSOCKET_URL || 'ws://192.168.1.45:8765'
+  }
+}
 
-// Log which URL we're using (for debugging)
-console.log('🔧 Using WebSocket URL:', PI_URL || 'Not set!')
-
-export function connectToPi(): Promise<void> {
-  return new Promise((resolve, reject) => {
+export async function connectToPi(): Promise<void> {
+  return new Promise(async (resolve, reject) => {
     if (ws?.readyState === WebSocket.OPEN) {
       console.log('✅ Already connected to Pi')
       resolve()
       return
     }
 
+    // Fetch URL at runtime (not build-time!)
+    const PI_URL = await getWebSocketUrl()
+    console.log('🔧 Using WebSocket URL:', PI_URL)
     console.log('🔌 Connecting to Pi at:', PI_URL)
+
     ws = new WebSocket(PI_URL)
+    reconnectAttempts = 0
 
     ws.onopen = () => {
       console.log('✅ Connected to Pi!')
@@ -29,17 +42,27 @@ export function connectToPi(): Promise<void> {
 
     ws.onerror = (error) => {
       console.error('❌ WebSocket connection error')
-      // Don't reject immediately, let onclose handle it
-      // This prevents the error from breaking the connection attempt
     }
 
     ws.onclose = () => {
       console.log('⚠️ Disconnected')
       connected = false
+      
+      // Auto-reconnect
+      if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+        reconnectAttempts++
+        console.log(`🔄 Reconnecting... (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`)
+        setTimeout(() => connectToPi(), 3000)
+      }
     }
 
     ws.onmessage = (event) => {
-      console.log('📨 Response:', JSON.parse(event.data))
+      try {
+        const response = JSON.parse(event.data)
+        console.log('📨 Response:', response)
+      } catch (e) {
+        console.log('📨 Message:', event.data)
+      }
     }
   })
 }
@@ -62,7 +85,6 @@ if (typeof window !== 'undefined') {
   (window as any).checkPiConnection = () => {
     console.log('WebSocket state:', ws?.readyState);
     console.log('Connected:', connected);
-    console.log('URL:', PI_URL);
   };
 }
 
@@ -111,4 +133,3 @@ export function dispenseToPi(servoId: string, medication: string): Promise<any> 
     }
   })
 }
-

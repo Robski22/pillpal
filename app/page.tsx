@@ -4,7 +4,7 @@ import { useAuth } from '../src/contexts/AuthContext'
 import { useRouter } from 'next/navigation'
 import { useEffect, useState, useRef } from 'react'
 import { supabase } from '../src/lib/supabase'
-import { connectToPi, disconnectFromPi, isConnectedToPi, dispenseToPi } from '../src/lib/pi-websocket'
+import { connectToPi, disconnectFromPi, isConnectedToPi, dispenseToPi, sendSmsViaPi } from '../src/lib/pi-websocket'
 import { getNearestSaturday, getNearestSunday, formatDate, getPhilippineTime } from '../src/lib/date-utils'
 
 interface Medication {
@@ -280,6 +280,60 @@ export default function Home() {
               }
             } catch (logErr) {
               console.error('Log auto-dispense error:', logErr)
+            }
+
+            // Send SMS notification for auto-dispense via Pi (SIMCOM module) - Multiple recipients
+            try {
+              const { data: { session } } = await supabase.auth.getSession()
+              if (session?.user && piConnected) {
+                // Get user's phone number and emergency contact from profiles table
+                const { data: profileData } = await supabase
+                  .from('profiles')
+                  .select('phone_number, emergency_contact')
+                  .eq('id', session.user.id)
+                  .single()
+
+                // Collect all phone numbers to send SMS to
+                const phoneNumbers: string[] = []
+                
+                // Add main phone number
+                if (profileData?.phone_number) {
+                  phoneNumbers.push(profileData.phone_number)
+                }
+                
+                // Extract phone number from emergency contact
+                if (profileData?.emergency_contact) {
+                  const emergencyContact = profileData.emergency_contact.trim()
+                  const phoneMatch = emergencyContact.match(/(\+?63|0)?9\d{9}/)
+                  if (phoneMatch) {
+                    let emergencyPhone = phoneMatch[0]
+                    if (!emergencyPhone.startsWith('0') && !emergencyPhone.startsWith('+63')) {
+                      emergencyPhone = '0' + emergencyPhone
+                    }
+                    phoneNumbers.push(emergencyPhone)
+                  }
+                }
+
+                if (phoneNumbers.length > 0) {
+                  const smsMessage = `It's time for your medicine: ${medicationNames}`
+                  
+                  // Send SMS via Pi WebSocket (SIMCOM module) to all recipients
+                  const smsResult = await sendSmsViaPi(phoneNumbers, smsMessage)
+                  
+                  if (smsResult.success) {
+                    console.log(`✅ SMS notification sent via SIMCOM (auto-dispense) to ${phoneNumbers.length} recipient(s):`, smsResult)
+                  } else {
+                    console.warn('⚠️ SMS notification failed (auto-dispense):', smsResult)
+                  }
+                } else {
+                  console.log('ℹ️ No phone numbers found in profile, skipping SMS notification')
+                }
+              } else if (!piConnected) {
+                console.log('ℹ️ Pi not connected, skipping SMS notification')
+              }
+            } catch (smsErr) {
+              console.error('Error sending SMS notification (auto-dispense):', smsErr)
+              // Don't block the dispense if SMS fails
             }
           } else {
             console.log('⚠️ Pi not connected - would dispense bundle:', medicationNames)
@@ -838,24 +892,35 @@ export default function Home() {
       targetTimeFrame = timeFrame || null
       let isEarlyDispense = false
       
-      // Check if this time frame was already dispensed (ONCE PER TIME FRAME LIMIT)
-      const dispensedFrames = day.dispensedTimeFrames || []
-      if (targetTimeFrame && dispensedFrames.includes(targetTimeFrame)) {
-        alert(`⚠️ ${TIME_FRAMES[targetTimeFrame].label} bundle has already been dispensed for ${day.name}. Each time frame can only be dispensed once per day.`)
-        return
-      }
+      // TEMPORARILY DISABLED FOR TESTING - Check if this time frame was already dispensed (ONCE PER TIME FRAME LIMIT)
+      // const dispensedFrames = day.dispensedTimeFrames || []
+      // if (targetTimeFrame && dispensedFrames.includes(targetTimeFrame)) {
+      //   alert(`⚠️ ${TIME_FRAMES[targetTimeFrame].label} bundle has already been dispensed for ${day.name}. Each time frame can only be dispensed once per day.`)
+      //   return
+      // }
       
       if (!targetTimeFrame) {
-        // Find next available time frame (progressive) - skip already dispensed ones
+        // TEMPORARILY DISABLED FOR TESTING - Find next available time frame (progressive) - skip already dispensed ones
         const frameOrder = ['morning', 'afternoon', 'evening'] as const
         
-        // Find first time frame that hasn't been dispensed
+        // TEMPORARILY: Just use the first time frame with medications
         for (const frame of frameOrder) {
-          if (!dispensedFrames.includes(frame)) {
+          const frameMeds = day.medications[frame] || []
+          if (frameMeds.length > 0) {
             targetTimeFrame = frame
             break
           }
         }
+        
+        // ORIGINAL CODE (commented for testing):
+        // // Find first time frame that hasn't been dispensed
+        // const dispensedFrames = day.dispensedTimeFrames || []
+        // for (const frame of frameOrder) {
+        //   if (!dispensedFrames.includes(frame)) {
+        //     targetTimeFrame = frame
+        //     break
+        //   }
+        // }
         
         // If all time frames are dispensed, move to next day
         if (!targetTimeFrame) {
@@ -882,74 +947,79 @@ export default function Home() {
         }
       }
       
-      // Check if we're trying to dispense a time frame that hasn't started yet
-      // Allow early dispense 30 minutes before the time frame starts
+      // TEMPORARILY DISABLED FOR TESTING - All time frame restrictions disabled
       if (!targetTimeFrame) {
         alert('No time frame selected. Please select a time frame to dispense.')
         return
       }
-      const frameInfo = TIME_FRAMES[targetTimeFrame]
-      const [startHour, startMin] = frameInfo.start.split(':').map(Number)
-      const startMinutes = startHour * 60 + startMin
-      const earlyDispenseWindow = startMinutes - 30 // 30 minutes before
       
-      // Determine if current time is within the time frame or early dispense window
-      let isInTimeFrame = false
+      // TEMPORARILY DISABLED FOR TESTING - Skip all time frame checks
+      let isInTimeFrame = true // Always allow for testing
       let isInEarlyWindow = false
       
-      if (targetTimeFrame === 'morning') {
-        // Morning: 5:00 (300 min) to 12:00 (720 min)
-        isInTimeFrame = currentTimeMinutes >= 300 && currentTimeMinutes <= 720
-        // Early window: 30 min before 5:00 = 4:30 (270 min) to 4:59 (299 min)
-        isInEarlyWindow = currentTimeMinutes >= 270 && currentTimeMinutes < 300
-      } else if (targetTimeFrame === 'afternoon') {
-        // Afternoon: 12:01 (721 min) to 19:00 (1140 min)
-        isInTimeFrame = currentTimeMinutes >= 721 && currentTimeMinutes <= 1140
-        // Early window: 30 min before 12:01 = 11:31 (691 min) to 12:00 (720 min)
-        isInEarlyWindow = currentTimeMinutes >= 691 && currentTimeMinutes < 721
-      } else if (targetTimeFrame === 'evening') {
-        // Evening: 19:01 (1141 min) to 23:59 (1439 min) OR 0:00 (0 min) to 3:00 (180 min)
-        isInTimeFrame = currentTimeMinutes >= 1141 || currentTimeMinutes <= 180
-        // Early window: 30 min before 19:01 = 18:31 (1111 min) to 19:00 (1140 min)
-        // OR 30 min before 0:00 (wraps around) = 23:30 (1410 min) to 23:59 (1439 min)
-        isInEarlyWindow = (currentTimeMinutes >= 1111 && currentTimeMinutes < 1141) || 
-                          (currentTimeMinutes >= 1410 && currentTimeMinutes <= 1439)
-      }
+      // ORIGINAL CODE (commented for testing):
+      // const frameInfo = TIME_FRAMES[targetTimeFrame]
+      // const [startHour, startMin] = frameInfo.start.split(':').map(Number)
+      // const startMinutes = startHour * 60 + startMin
+      // const earlyDispenseWindow = startMinutes - 30 // 30 minutes before
+      // 
+      // // Determine if current time is within the time frame or early dispense window
+      // let isInTimeFrame = false
+      // let isInEarlyWindow = false
+      // 
+      // if (targetTimeFrame === 'morning') {
+      //   // Morning: 5:00 (300 min) to 12:00 (720 min)
+      //   isInTimeFrame = currentTimeMinutes >= 300 && currentTimeMinutes <= 720
+      //   // Early window: 30 min before 5:00 = 4:30 (270 min) to 4:59 (299 min)
+      //   isInEarlyWindow = currentTimeMinutes >= 270 && currentTimeMinutes < 300
+      // } else if (targetTimeFrame === 'afternoon') {
+      //   // Afternoon: 12:01 (721 min) to 19:00 (1140 min)
+      //   isInTimeFrame = currentTimeMinutes >= 721 && currentTimeMinutes <= 1140
+      //   // Early window: 30 min before 12:01 = 11:31 (691 min) to 12:00 (720 min)
+      //   isInEarlyWindow = currentTimeMinutes >= 691 && currentTimeMinutes < 721
+      // } else if (targetTimeFrame === 'evening') {
+      //   // Evening: 19:01 (1141 min) to 23:59 (1439 min) OR 0:00 (0 min) to 3:00 (180 min)
+      //   isInTimeFrame = currentTimeMinutes >= 1141 || currentTimeMinutes <= 180
+      //   // Early window: 30 min before 19:01 = 18:31 (1111 min) to 19:00 (1140 min)
+      //   // OR 30 min before 0:00 (wraps around) = 23:30 (1410 min) to 23:59 (1439 min)
+      //   isInEarlyWindow = (currentTimeMinutes >= 1111 && currentTimeMinutes < 1141) || 
+      //                     (currentTimeMinutes >= 1410 && currentTimeMinutes <= 1439)
+      // }
       
-      // Check if trying to dispense a time frame that's already passed (progressive check)
-      const lastDispensedTime = day.lastDispensedTime
-      if (lastDispensedTime) {
-        const [lastHour, lastMin] = lastDispensedTime.split(':').map(Number)
-        const lastMinutes = lastHour * 60 + lastMin
-        
-        let lastFrame = ''
-        if (lastMinutes >= 300 && lastMinutes <= 720) lastFrame = 'morning'
-        else if (lastMinutes >= 721 && lastMinutes <= 1140) lastFrame = 'afternoon'
-        else if (lastMinutes >= 1141 || lastMinutes <= 180) lastFrame = 'evening'
-        
-        const frameOrder = { morning: 1, afternoon: 2, evening: 3 }
-        // If trying to dispense an earlier time frame that was already done, block it
-        if (frameOrder[targetTimeFrame] < frameOrder[lastFrame as keyof typeof frameOrder]) {
-          alert(`⚠️ ${TIME_FRAMES[targetTimeFrame].label} bundle was already dispensed. Next is ${lastFrame === 'morning' ? 'Afternoon' : 'Evening'}.`)
-          return
-        }
-      }
-      
-      // If not in time frame and not in early window, block dispense
-      if (!isInTimeFrame && !isInEarlyWindow) {
-        const nextFrameStart = frameInfo.start
-        alert(`⚠️ ${TIME_FRAMES[targetTimeFrame].label} time frame hasn't started yet.\n\nTime frame: ${frameInfo.start} - ${frameInfo.end}\nCurrent time: ${currentTimeStr}\n\nYou can dispense early starting 30 minutes before the time frame (30 min before ${nextFrameStart}).`)
-        return
-      }
-      
-      // If in early window, show warning
-      if (isInEarlyWindow) {
-        isEarlyDispense = true
-        const confirmMessage = `⚠️ Early Dispense Warning\n\nYou are dispensing ${TIME_FRAMES[targetTimeFrame].label} bundle 30 minutes before the time frame starts.\n\nTime frame: ${frameInfo.start} - ${frameInfo.end}\nCurrent time: ${currentTimeStr}\n\nAre you sure you want to dispense early?`
-        if (!confirm(confirmMessage)) {
-          return // User cancelled
-        }
-      }
+      // TEMPORARILY DISABLED FOR TESTING - Check if trying to dispense a time frame that's already passed (progressive check)
+      // const lastDispensedTime = day.lastDispensedTime
+      // if (lastDispensedTime) {
+      //   const [lastHour, lastMin] = lastDispensedTime.split(':').map(Number)
+      //   const lastMinutes = lastHour * 60 + lastMin
+      //   
+      //   let lastFrame = ''
+      //   if (lastMinutes >= 300 && lastMinutes <= 720) lastFrame = 'morning'
+      //   else if (lastMinutes >= 721 && lastMinutes <= 1140) lastFrame = 'afternoon'
+      //   else if (lastMinutes >= 1141 || lastMinutes <= 180) lastFrame = 'evening'
+      //   
+      //   const frameOrder = { morning: 1, afternoon: 2, evening: 3 }
+      //   // If trying to dispense an earlier time frame that was already done, block it
+      //   if (frameOrder[targetTimeFrame] < frameOrder[lastFrame as keyof typeof frameOrder]) {
+      //     alert(`⚠️ ${TIME_FRAMES[targetTimeFrame].label} bundle was already dispensed. Next is ${lastFrame === 'morning' ? 'Afternoon' : 'Evening'}.`)
+      //     return
+      //   }
+      // }
+      // 
+      // // If not in time frame and not in early window, block dispense
+      // if (!isInTimeFrame && !isInEarlyWindow) {
+      //   const nextFrameStart = frameInfo.start
+      //   alert(`⚠️ ${TIME_FRAMES[targetTimeFrame].label} time frame hasn't started yet.\n\nTime frame: ${frameInfo.start} - ${frameInfo.end}\nCurrent time: ${currentTimeStr}\n\nYou can dispense early starting 30 minutes before the time frame (30 min before ${nextFrameStart}).`)
+      //   return
+      // }
+      // 
+      // // If in early window, show warning
+      // if (isInEarlyWindow) {
+      //   isEarlyDispense = true
+      //   const confirmMessage = `⚠️ Early Dispense Warning\n\nYou are dispensing ${TIME_FRAMES[targetTimeFrame].label} bundle 30 minutes before the time frame starts.\n\nTime frame: ${frameInfo.start} - ${frameInfo.end}\nCurrent time: ${currentTimeStr}\n\nAre you sure you want to dispense early?`
+      //   if (!confirm(confirmMessage)) {
+      //     return // User cancelled
+      //   }
+      // }
       
       // Get all medications in the target time frame (bundle)
       frameMedications = day.medications[targetTimeFrame] || []
@@ -1007,6 +1077,62 @@ export default function Home() {
         }
       } catch (logErr) {
         console.error('Log manual-dispense error:', logErr)
+      }
+
+      // Send SMS notification via Pi (SIMCOM module) - Multiple recipients
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (session?.user && piConnected) {
+          // Get user's phone number and emergency contact from profiles table
+          const { data: profileData } = await supabase
+            .from('profiles')
+            .select('phone_number, emergency_contact')
+            .eq('id', session.user.id)
+            .single()
+
+          // Collect all phone numbers to send SMS to
+          const phoneNumbers: string[] = []
+          
+          // Add main phone number
+          if (profileData?.phone_number) {
+            phoneNumbers.push(profileData.phone_number)
+          }
+          
+          // Extract phone number from emergency contact (format: "Name 09171234567" or just "09171234567")
+          if (profileData?.emergency_contact) {
+            const emergencyContact = profileData.emergency_contact.trim()
+            // Try to extract phone number (look for pattern like 09XXXXXXXXX or +63XXXXXXXXX)
+            const phoneMatch = emergencyContact.match(/(\+?63|0)?9\d{9}/)
+            if (phoneMatch) {
+              let emergencyPhone = phoneMatch[0]
+              // Normalize format (ensure starts with 0 or +63)
+              if (!emergencyPhone.startsWith('0') && !emergencyPhone.startsWith('+63')) {
+                emergencyPhone = '0' + emergencyPhone
+              }
+              phoneNumbers.push(emergencyPhone)
+            }
+          }
+
+          if (phoneNumbers.length > 0) {
+            const smsMessage = `It's time for your medicine: ${medicationNames}`
+            
+            // Send SMS via Pi WebSocket (SIMCOM module) to all recipients
+            const smsResult = await sendSmsViaPi(phoneNumbers, smsMessage)
+            
+            if (smsResult.success) {
+              console.log(`✅ SMS notification sent via SIMCOM to ${phoneNumbers.length} recipient(s):`, smsResult)
+            } else {
+              console.warn('⚠️ SMS notification failed:', smsResult)
+            }
+          } else {
+            console.log('ℹ️ No phone numbers found in profile, skipping SMS notification')
+          }
+        } else if (!piConnected) {
+          console.log('ℹ️ Pi not connected, skipping SMS notification')
+        }
+      } catch (smsErr) {
+        console.error('Error sending SMS notification:', smsErr)
+        // Don't block the dispense if SMS fails
       }
 
       // Reset status after 3 seconds

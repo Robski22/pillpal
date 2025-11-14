@@ -133,3 +133,50 @@ export function dispenseToPi(servoId: string, medication: string): Promise<any> 
     }
   })
 }
+
+export function sendSmsViaPi(phoneNumber: string | string[], message: string): Promise<any> {
+  return new Promise((resolve, reject) => {
+    if (!ws || !connected) {
+      console.error('❌ Cannot send SMS: Not connected to Pi!')
+      reject(new Error('Not connected to Pi!'))
+      return
+    }
+
+    if (ws.readyState !== WebSocket.OPEN) {
+      console.error('❌ Cannot send SMS: WebSocket not open!')
+      reject(new Error('WebSocket not open!'))
+      return
+    }
+
+    // Convert single phone number to array for consistent handling
+    const phoneNumbers = Array.isArray(phoneNumber) ? phoneNumber : [phoneNumber]
+
+    const smsMessage = JSON.stringify({
+      type: 'send_sms',
+      phone_numbers: phoneNumbers,  // Send as array
+      message: message
+    })
+
+    console.log('📤 Sending SMS via Pi:', phoneNumber)
+    ws.send(smsMessage)
+    
+    const timeout = setTimeout(() => {
+      console.error('❌ SMS timeout - no response from Pi')
+      reject(new Error('Timeout - Pi did not respond'))
+    }, 15000) // Longer timeout for SMS (15 seconds)
+    
+    const originalHandler = ws.onmessage
+    ws.onmessage = (event) => {
+      clearTimeout(timeout)
+      try {
+        const response = JSON.parse(event.data)
+        console.log('✅ SMS response received:', response)
+        resolve(response)
+      } catch (error) {
+        console.error('❌ Error parsing SMS response:', error)
+        reject(error)
+      }
+      ws!.onmessage = originalHandler
+    }
+  })
+}

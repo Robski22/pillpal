@@ -1033,20 +1033,65 @@ export default function Profile() {
     setSaving(true)
 
     try {
+      // Refresh session first to avoid JWT expiration
+      const session = await refreshSessionIfNeeded()
+      if (!session) {
+        alert('Your session has expired. Please log in again.')
+        router.push('/login')
+        return
+      }
+
+      // Get fresh user ID from session
+      const userId = session.user.id
+      if (!userId) {
+        throw new Error('No user ID found in session')
+      }
+
       const { error } = await supabase
         .from('profiles')
         .upsert({
-          id: user?.id,
+          id: userId,
           full_name: profile.full_name,
           phone_number: profile.phone_number,
           emergency_contact: profile.emergency_contact,
           updated_at: new Date().toISOString()
         })
 
-      if (error) throw error
+      if (error) {
+        // If JWT expired error, try refreshing again
+        if (error.message?.includes('JWT') || error.message?.includes('expired')) {
+          console.log('🔄 JWT expired during save, refreshing session...')
+          const refreshedSession = await refreshSessionIfNeeded()
+          if (!refreshedSession) {
+            alert('Your session has expired. Please log in again.')
+            router.push('/login')
+            return
+          }
+          
+          // Retry the save with refreshed session
+          const { error: retryError } = await supabase
+            .from('profiles')
+            .upsert({
+              id: refreshedSession.user.id,
+              full_name: profile.full_name,
+              phone_number: profile.phone_number,
+              emergency_contact: profile.emergency_contact,
+              updated_at: new Date().toISOString()
+            })
+          
+          if (retryError) throw retryError
+        } else {
+          throw error
+        }
+      }
+      
       alert('Profile updated successfully!')
+      
+      // Refresh profile data after save
+      await fetchProfile()
     } catch (error: any) {
-      alert('Error updating profile: ' + error.message)
+      console.error('Error updating profile:', error)
+      alert('Error updating profile: ' + (error.message || 'Unknown error'))
     } finally {
       setSaving(false)
     }

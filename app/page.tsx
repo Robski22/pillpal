@@ -953,9 +953,13 @@ export default function Home() {
         return
       }
       
+      // Define frameInfo for use in alerts (even though checks are disabled)
+      const frameInfo = TIME_FRAMES[targetTimeFrame]
+      
       // TEMPORARILY DISABLED FOR TESTING - Skip all time frame checks
       let isInTimeFrame = true // Always allow for testing
       let isInEarlyWindow = false
+      let isEarlyDispense = false // No early dispense warnings for testing
       
       // ORIGINAL CODE (commented for testing):
       // const frameInfo = TIME_FRAMES[targetTimeFrame]

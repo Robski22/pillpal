@@ -959,7 +959,7 @@ export default function Home() {
       // TEMPORARILY DISABLED FOR TESTING - Skip all time frame checks
       let isInTimeFrame = true // Always allow for testing
       let isInEarlyWindow = false
-      let isEarlyDispense = false // No early dispense warnings for testing
+      // isEarlyDispense already declared at line 893
       
       // ORIGINAL CODE (commented for testing):
       // const frameInfo = TIME_FRAMES[targetTimeFrame]

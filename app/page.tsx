@@ -1004,15 +1004,15 @@ export default function Home() {
       //     return
       //   }
       // }
-      // 
-      // // If not in time frame and not in early window, block dispense
+      
+      // TEMPORARILY DISABLED FOR TESTING - Skip all restrictions
+      // Original code commented out - allow dispensing anytime for SMS testing
       // if (!isInTimeFrame && !isInEarlyWindow) {
       //   const nextFrameStart = frameInfo.start
       //   alert(`⚠️ ${TIME_FRAMES[targetTimeFrame].label} time frame hasn't started yet.\n\nTime frame: ${frameInfo.start} - ${frameInfo.end}\nCurrent time: ${currentTimeStr}\n\nYou can dispense early starting 30 minutes before the time frame (30 min before ${nextFrameStart}).`)
       //   return
       // }
       // 
-      // // If in early window, show warning
       // if (isInEarlyWindow) {
       //   isEarlyDispense = true
       //   const confirmMessage = `⚠️ Early Dispense Warning\n\nYou are dispensing ${TIME_FRAMES[targetTimeFrame].label} bundle 30 minutes before the time frame starts.\n\nTime frame: ${frameInfo.start} - ${frameInfo.end}\nCurrent time: ${currentTimeStr}\n\nAre you sure you want to dispense early?`

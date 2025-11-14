@@ -5,21 +5,39 @@ import { useRouter } from 'next/navigation'
 import { useEffect, useState, useRef } from 'react'
 import { supabase } from '../src/lib/supabase'
 import { connectToPi, disconnectFromPi, isConnectedToPi, dispenseToPi } from '../src/lib/pi-websocket'
+import { getNearestSaturday, getNearestSunday, formatDate, getPhilippineTime } from '../src/lib/date-utils'
 
-interface Schedule {
+interface Medication {
   id: string
-  time: string
-  date: string
-  is_daily: boolean
+  medication_name: string
+  time_frame: 'morning' | 'afternoon' | 'evening'
+  // Note: time is now at time frame level, not per medication
 }
 
-interface ServoData {
-  id: number
-  name: string
-  medication: string
-  schedules: Schedule[]
+interface DayData {
+  dayOfWeek: number // 0 = Sunday, 6 = Saturday
+  name: string // "Saturday" or "Sunday"
+  medications: {
+    morning: Medication[]
+    afternoon: Medication[]
+    evening: Medication[]
+  }
+  timeFrameTimes: {
+    morning: string | null // Time for morning frame (e.g., "08:00")
+    afternoon: string | null // Time for afternoon frame
+    evening: string | null // Time for evening frame
+  }
   status: string
-  is_occupied: boolean
+  servoNumber: number // 1 for Saturday, 2 for Sunday (for Pi server mapping)
+  lastDispensedTime?: string // Track last manual dispense time (HH:MM) for progressive scheduling
+  dispensedTimeFrames?: string[] // Track which time frames have been dispensed (e.g., ['morning', 'afternoon'])
+}
+
+// Time frame definitions
+const TIME_FRAMES = {
+  morning: { label: 'Morning', start: '05:00', end: '12:00', default: '08:00' },
+  afternoon: { label: 'Afternoon', start: '12:01', end: '19:00', default: '14:00' },
+  evening: { label: 'Evening', start: '19:01', end: '03:00', default: '21:00' }
 }
 
 export default function Home() {
@@ -28,18 +46,37 @@ export default function Home() {
   const [piConnected, setPiConnected] = useState(false)
   const [ownerUserId, setOwnerUserId] = useState<string | null>(null)
   const [isOwner, setIsOwner] = useState(true)
-  const [servos, setServos] = useState<ServoData[]>([
-    { id: 1, name: 'Servo 1', medication: '', schedules: [], status: 'ready', is_occupied: false },
-    { id: 2, name: 'Servo 2', medication: '', schedules: [], status: 'ready', is_occupied: false },
-    { id: 3, name: 'Servo 3', medication: '', schedules: [], status: 'ready', is_occupied: false }
+  // Saturday (dayOfWeek = 6) and Sunday (dayOfWeek = 0)
+  // Both use servo1 (spins 30 degrees each time)
+  const [days, setDays] = useState<DayData[]>([
+    { 
+      dayOfWeek: 6, 
+      name: 'Saturday', 
+      medications: { morning: [], afternoon: [], evening: [] },
+      timeFrameTimes: { morning: null, afternoon: null, evening: null },
+      status: 'ready', 
+      servoNumber: 1,
+      dispensedTimeFrames: []
+    },
+    { 
+      dayOfWeek: 0, 
+      name: 'Sunday', 
+      medications: { morning: [], afternoon: [], evening: [] },
+      timeFrameTimes: { morning: null, afternoon: null, evening: null },
+      status: 'ready', 
+      servoNumber: 1,
+      dispensedTimeFrames: []
+    }
   ])
-  const [editingServo, setEditingServo] = useState<number | null>(null)
-  const [formData, setFormData] = useState({
-    medication_name: '',
-    time: '',
-    date: new Date().toISOString().split('T')[0], // Today's date
-    is_daily: true
+  const [editingDay, setEditingDay] = useState<number | null>(null) // dayOfWeek (6 or 0)
+  const [editingTimeFrame, setEditingTimeFrame] = useState<'morning' | 'afternoon' | 'evening' | null>(null)
+  const [addingMedication, setAddingMedication] = useState<{ dayOfWeek: number; timeFrame: string } | null>(null)
+  const [editingMedication, setEditingMedication] = useState<{ id: string; name: string; dayOfWeek: number; timeFrame: string } | null>(null)
+  const [editingTimeFrameTime, setEditingTimeFrameTime] = useState<{ dayOfWeek: number; timeFrame: string } | null>(null)
+  const [newMedication, setNewMedication] = useState({
+    name: ''
   })
+  const [timeFrameTime, setTimeFrameTime] = useState('')
   // Caregiver access disabled temporarily to fix signup
 
   // Check for password reset hash fragment and redirect to reset-password page
@@ -83,8 +120,10 @@ export default function Home() {
     let checkCounter = 0
     
     const checkSchedules = async () => {
-      // Use device's local time (not UTC)
-      const now = new Date()
+      // Use Philippine time
+      const now = getPhilippineTime()
+      const currentDayOfWeek = now.getDay() // 0 = Sunday, 6 = Saturday
+      
       // Get local time in HH:MM format (e.g., "19:25")
       const hours = String(now.getHours()).padStart(2, '0')
       const minutes = String(now.getMinutes()).padStart(2, '0')
@@ -98,178 +137,208 @@ export default function Home() {
 
       // Log only every 60 seconds to reduce console spam
       if (checkCounter % 60 === 0) {
-        console.log(`🕐 Checking schedules at ${currentTime} on ${currentDate}`)
+        console.log(`🕐 Checking schedules at ${currentTime} on ${currentDate} (Day: ${currentDayOfWeek === 6 ? 'Saturday' : currentDayOfWeek === 0 ? 'Sunday' : 'Weekday'})`)
       }
       checkCounter++
 
-      // First, clean up expired one-time schedules
-      for (const servo of servos) {
-        if (!servo.medication) continue
+      // Check for active schedules - only on Saturday (6) or Sunday (0)
+      if (currentDayOfWeek !== 6 && currentDayOfWeek !== 0) {
+        return // Not Saturday or Sunday, skip checking
+      }
 
-        const expiredSchedules = servo.schedules.filter(schedule => 
-          !schedule.is_daily && schedule.date < currentDate
-        )
+      // Find the day data for today (Saturday or Sunday)
+      const todayDay = days.find(d => d.dayOfWeek === currentDayOfWeek)
+      if (!todayDay) return
+      
+      // Get all medications for today (from all time frames)
+      const allMedications = [
+        ...todayDay.medications.morning,
+        ...todayDay.medications.afternoon,
+        ...todayDay.medications.evening
+      ]
+      
+      if (allMedications.length === 0) return // No medications configured
 
-        // Delete expired schedules
-        for (const schedule of expiredSchedules) {
-          try {
-            const { error } = await supabase
-              .from('schedules')
-              .delete()
-              .eq('id', schedule.id)
-            
-            if (!error) {
-              console.log(`🗑️ Deleted expired schedule: ${schedule.date} ${schedule.time}`)
-            }
-          } catch (error) {
-            console.error('Error deleting expired schedule:', error)
+      // Progressive scheduling: Skip medications if already dispensed manually
+      // Get last dispensed time for this day
+      const lastDispensedTime = todayDay.lastDispensedTime
+      
+      // Find active time frames - group medications by time frame and check if any medication in that frame matches current time
+      // Each time frame is a BUNDLE - all medications in that frame dispense together
+      const activeTimeFrames = new Set<string>()
+      
+      // Group medications by time frame
+      const medicationsByFrame: { [key: string]: Medication[] } = {
+        morning: todayDay.medications.morning,
+        afternoon: todayDay.medications.afternoon,
+        evening: todayDay.medications.evening
+      }
+      
+      // Check each time frame
+      for (const [timeFrame, frameMeds] of Object.entries(medicationsByFrame)) {
+        if (frameMeds.length === 0) continue // No medications in this frame
+        
+        // Progressive logic: Skip if this time frame was already dispensed
+        if (lastDispensedTime) {
+          const [lastHour, lastMin] = lastDispensedTime.split(':').map(Number)
+          const lastMinutes = lastHour * 60 + lastMin
+          
+          // Determine which time frame the last dispense was in
+          let lastFrame = ''
+          if (lastMinutes >= 300 && lastMinutes <= 720) lastFrame = 'morning'
+          else if (lastMinutes >= 721 && lastMinutes <= 1140) lastFrame = 'afternoon'
+          else if (lastMinutes >= 1141 || lastMinutes <= 180) lastFrame = 'evening'
+          
+          // Skip if this time frame is earlier than last dispensed
+          const frameOrder = { morning: 1, afternoon: 2, evening: 3 }
+          if (frameOrder[timeFrame as keyof typeof frameOrder] < frameOrder[lastFrame as keyof typeof frameOrder]) {
+            continue // Skip - this time frame was already done
           }
+        }
+        
+        // Check if the time frame's scheduled time matches current time
+        const frameTime = todayDay.timeFrameTimes[timeFrame as keyof typeof todayDay.timeFrameTimes]
+        if (!frameTime) continue // No time set for this frame
+        
+        const frameTimeHHMM = frameTime.slice(0, 5)
+        const isTimeMatch = frameTimeHHMM === currentTime
+        
+        if (!isTimeMatch) continue
+        
+        // Check if current time is within this time frame
+        const currentHour = now.getHours()
+        const currentMinute = now.getMinutes()
+        const currentTimeMinutes = currentHour * 60 + currentMinute
+        
+        let isInTimeFrame = false
+        if (timeFrame === 'morning') {
+          isInTimeFrame = currentTimeMinutes >= 300 && currentTimeMinutes <= 720
+        } else if (timeFrame === 'afternoon') {
+          isInTimeFrame = currentTimeMinutes >= 721 && currentTimeMinutes <= 1140
+        } else if (timeFrame === 'evening') {
+          isInTimeFrame = currentTimeMinutes >= 1141 || currentTimeMinutes <= 180
+        }
+        
+        // Only dispense at the TOP of the minute (seconds 0-2)
+        const currentSeconds = now.getSeconds()
+        const isTopOfMinute = currentSeconds < 3
+        
+        if (isInTimeFrame && isTopOfMinute) {
+          activeTimeFrames.add(timeFrame)
         }
       }
 
-      // Then check for active schedules
-      for (const servo of servos) {
-        if (!servo.medication) continue
-
-        const activeSchedules = servo.schedules.filter(schedule => {
-          // Extract HH:MM from database time (19:18:00 -> 19:18)
-          const scheduleTimeHHMM = schedule.time.slice(0, 5)
-          const isTimeMatch = scheduleTimeHHMM === currentTime
-          const isDateMatch = schedule.is_daily || schedule.date === currentDate
-          
-          // Only dispense at the TOP of the minute (seconds 0-2)
-          // This ensures: if you set schedule at 7:24:01 for time "7:25", 
-          // it dispenses at 7:25:00 (not 7:25:01 or 7:25:30)
-          const currentSeconds = now.getSeconds()
-          const isTopOfMinute = currentSeconds < 3 // Dispense within first 3 seconds (00, 01, 02)
-          
-          return isTimeMatch && isDateMatch && isTopOfMinute
-        })
-
-        for (const schedule of activeSchedules) {
-          // Create unique key for this schedule
-          const scheduleKey = `${schedule.id}-${currentDate}-${currentTime}`
-          
-          // Skip if already executed this minute
-          if (executedSchedulesRef.current.has(scheduleKey)) {
-            continue
-          }
-          
-          // Mark as executed
-          executedSchedulesRef.current.add(scheduleKey)
-          
-          console.log(`🕐 Time to dispense ${servo.medication} from ${servo.name}!`)
-          
-          // Update UI to show dispensing
-          setServos(prevServos => 
-            prevServos.map(s => 
-              s.id === servo.id 
-                ? { ...s, status: 'dispensing' }
-                : s
-            )
+      // Dispense ALL medications in each active time frame (bundled together)
+      for (const timeFrame of activeTimeFrames) {
+        const frameKey = `${timeFrame}-${currentDate}-${currentTime}`
+        
+        // Skip if already executed this minute
+        if (executedSchedulesRef.current.has(frameKey)) {
+          continue
+        }
+        
+        // Mark as executed
+        executedSchedulesRef.current.add(frameKey)
+        
+        // Get ALL medications in this time frame (bundle)
+        const frameMedications = medicationsByFrame[timeFrame]
+        const medicationNames = frameMedications.map(m => m.medication_name).join(', ')
+        
+        console.log(`🕐 Time to dispense ${timeFrame} bundle on ${todayDay.name}! Medications: ${medicationNames}`)
+        
+        // Update UI to show dispensing
+        setDays(prevDays => 
+          prevDays.map(d => 
+            d.dayOfWeek === currentDayOfWeek 
+              ? { ...d, status: 'dispensing', lastDispensedTime: currentTime }
+              : d
           )
-          
-          try {
-            if (piConnected) {
-              const response = await dispenseToPi(`servo${servo.id}`, servo.medication)
-              console.log('✅ Auto-dispense response:', response)
+        )
+        
+        try {
+          if (piConnected) {
+            // Dispense ALL medications in this time frame bundle
+            // Servo spins once for the entire bundle
+            const response = await dispenseToPi('servo1', medicationNames)
+            console.log('✅ Auto-dispense bundle response:', response)
 
-              // Log auto dispense success
-              try {
-                const { data: { session } } = await supabase.auth.getSession()
-                if (session?.user) {
-                  await supabase.from('dispense_history').insert({
-                    user_id: session.user.id,
-                    servo_number: servo.id,
-                    medication_name: servo.medication,
-                    action: 'auto',
-                    status: 'success',
-                    notes: 'Scheduled auto-dispense'
-                  })
-                }
-              } catch (logErr) {
-                console.error('Log auto-dispense error:', logErr)
-              }
-            } else {
-              console.log('⚠️ Pi not connected - would dispense', servo.medication)
-              // Log attempted auto dispense when Pi offline
-              try {
-                const { data: { session } } = await supabase.auth.getSession()
-                if (session?.user) {
-                  await supabase.from('dispense_history').insert({
-                    user_id: session.user.id,
-                    servo_number: servo.id,
-                    medication_name: servo.medication,
-                    action: 'auto',
-                    status: 'error',
-                    notes: 'Pi offline during auto-dispense'
-                  })
-                }
-              } catch (logErr) {
-                console.error('Log auto-dispense offline error:', logErr)
-              }
-            }
-          } catch (error) {
-            console.error('❌ Auto-dispense error:', error)
-            // Log auto dispense error
+            // Log auto dispense success for each medication in bundle
             try {
               const { data: { session } } = await supabase.auth.getSession()
               if (session?.user) {
-                await supabase.from('dispense_history').insert({
-                  user_id: session.user.id,
-                  servo_number: servo.id,
-                  medication_name: servo.medication,
-                  action: 'auto',
-                  status: 'error',
-                  notes: error instanceof Error ? error.message : 'Auto-dispense error'
-                })
+                // Log each medication separately for history
+                for (const med of frameMedications) {
+                  await supabase.from('dispense_history').insert({
+                    user_id: session.user.id,
+                    servo_number: todayDay.servoNumber,
+                    medication_name: med.medication_name,
+                    action: 'auto',
+                    status: 'success',
+                    notes: `Scheduled auto-dispense bundle on ${todayDay.name} (${timeFrame}) - ${medicationNames}`
+                  })
+                }
               }
             } catch (logErr) {
-              console.error('Log auto-dispense error (insert) failed:', logErr)
+              console.error('Log auto-dispense error:', logErr)
             }
-          }
-
-          // Reset status after 3 seconds
-          setTimeout(() => {
-            setServos(prevServos => 
-              prevServos.map(s => 
-                s.id === servo.id 
-                  ? { ...s, status: 'ready' }
-                  : s
-              )
-            )
-          }, 3000)
-          
-          // If it's a one-time schedule, delete it after dispensing
-          if (!schedule.is_daily) {
+          } else {
+            console.log('⚠️ Pi not connected - would dispense bundle:', medicationNames)
+            // Log attempted auto dispense when Pi offline
             try {
-              const { error } = await supabase
-                .from('schedules')
-                .delete()
-                .eq('id', schedule.id)
-              
-              if (!error) {
-                console.log(`🗑️ Deleted one-time schedule after dispensing: ${schedule.time} on ${schedule.date}`)
-                // Refresh data to update the UI
-                setTimeout(() => {
-                  fetchServoData()
-                }, 1000)
+              const { data: { session } } = await supabase.auth.getSession()
+              if (session?.user) {
+                for (const med of frameMedications) {
+                  await supabase.from('dispense_history').insert({
+                    user_id: session.user.id,
+                    servo_number: todayDay.servoNumber,
+                    medication_name: med.medication_name,
+                    action: 'auto',
+                    status: 'error',
+                    notes: 'Pi offline during auto-dispense bundle'
+                  })
+                }
               }
-            } catch (error) {
-              console.error('❌ Error deleting one-time schedule after dispense:', error)
+            } catch (logErr) {
+              console.error('Log auto-dispense offline error:', logErr)
             }
           }
-          
-          // Clear the executed flag after the minute passes (prevent memory leak)
-          setTimeout(() => {
-            executedSchedulesRef.current.delete(scheduleKey)
-          }, 120000) // 2 minutes
+        } catch (error) {
+          console.error('❌ Auto-dispense bundle error:', error)
+          // Log auto dispense error
+          try {
+            const { data: { session } } = await supabase.auth.getSession()
+            if (session?.user) {
+              for (const med of frameMedications) {
+                await supabase.from('dispense_history').insert({
+                  user_id: session.user.id,
+                  servo_number: todayDay.servoNumber,
+                  medication_name: med.medication_name,
+                  action: 'auto',
+                  status: 'error',
+                  notes: error instanceof Error ? error.message : 'Auto-dispense bundle error'
+                })
+              }
+            }
+          } catch (logErr) {
+            console.error('Log auto-dispense error (insert) failed:', logErr)
+          }
         }
-      }
 
-      // Refresh data to show updated schedules (only if expired schedules were found)
-      if (servos.some(s => s.schedules.some(sched => !sched.is_daily && sched.date < currentDate))) {
-        await fetchServoData()
+        // Reset status after 3 seconds
+        setTimeout(() => {
+          setDays(prevDays => 
+            prevDays.map(d => 
+              d.dayOfWeek === currentDayOfWeek 
+                ? { ...d, status: 'ready' }
+                : d
+            )
+          )
+        }, 3000)
+        
+        // Clear the executed flag after the minute passes (prevent memory leak)
+        setTimeout(() => {
+          executedSchedulesRef.current.delete(frameKey)
+        }, 120000) // 2 minutes
       }
     }
 
@@ -280,7 +349,7 @@ export default function Home() {
     const interval = setInterval(checkSchedules, 1000) // 1 second
 
     return () => clearInterval(interval)
-  }, [servos, piConnected])
+  }, [days, piConnected])
 
   useEffect(() => {
     if (!loading && !user) {
@@ -313,7 +382,7 @@ export default function Home() {
       })
       
       // Fetch data with resolved values
-      await fetchServoDataWithUserId(resolvedOwnerUserId, resolvedIsOwner)
+      await fetchDayDataWithUserId(resolvedOwnerUserId, resolvedIsOwner)
     }
     
     initializeData()
@@ -339,7 +408,7 @@ export default function Home() {
           console.log('🔄 Caregiver relationship removed, refreshing...')
           await resolveOwner()
           if (isMounted) {
-            await fetchServoData()
+            await fetchDayData()
           }
         }
       }
@@ -563,23 +632,23 @@ export default function Home() {
 
   // Caregiver management moved to Profile page
 
-  // Helper function to fetch with explicit user_id (for use after resolveOwner)
-  const fetchServoDataWithUserId = async (targetUserId: string, targetIsOwner: boolean) => {
+  // Helper function to fetch day data with explicit user_id
+  const fetchDayDataWithUserId = async (targetUserId: string, targetIsOwner: boolean) => {
     try {
       const session = await refreshSessionIfNeeded()
       if (!session) return
       
-      console.log('📊 Fetching data with user_id:', targetUserId, '(isOwner:', targetIsOwner, ')')
+      console.log('📊 Fetching day data with user_id:', targetUserId, '(isOwner:', targetIsOwner, ')')
       
-      // RLS policies will handle caregiver access automatically
-      // But we MUST query with the owner's user_id, not the caregiver's
+      // Fetch day_config for Saturday (6) and Sunday (0) (including time frame times)
       let { data: configs, error } = await supabase
-        .from('servo_config')
-        .select('*')
+        .from('day_config')
+        .select('id, user_id, day_of_week, medication_name, is_active, morning_time, afternoon_time, evening_time, created_at, updated_at')
         .eq('user_id', targetUserId)
+        .in('day_of_week', [6, 0]) // Saturday and Sunday only
 
       if (error) {
-        console.error('❌ Supabase error fetching servo_config:', error)
+        console.error('❌ Supabase error fetching day_config:', error)
         console.error('Error details:', {
           message: error.message,
           details: error.details,
@@ -593,14 +662,14 @@ export default function Home() {
           const refreshedSession = await refreshSessionIfNeeded()
           if (!refreshedSession) return // Already handled redirect
           
-          // Retry the query after refresh with same targetUserId
+          // Retry the query after refresh
           const retryResult = await supabase
-            .from('servo_config')
-            .select('*')
+            .from('day_config')
+            .select('id, user_id, day_of_week, medication_name, is_active, morning_time, afternoon_time, evening_time, created_at, updated_at')
             .eq('user_id', targetUserId)
+            .in('day_of_week', [6, 0])
           
           if (retryResult.error) {
-            // If still JWT error, the refresh didn't work - redirect to login
             if (retryResult.error.message?.includes('JWT') || retryResult.error.message?.includes('expired')) {
               alert('Your session has expired. Please log in again.')
               router.push('/login')
@@ -610,7 +679,6 @@ export default function Home() {
             return
           }
           
-          // Use retry result
           configs = retryResult.data
           error = null
         } else {
@@ -619,64 +687,102 @@ export default function Home() {
         }
       }
 
-      console.log('✅ Found servo configs:', configs?.length || 0)
+      console.log('✅ Found day configs:', configs?.length || 0)
 
-      // Always show all 3 servos, even if not configured yet
-      const servoData: ServoData[] = []
+      // Always show Saturday and Sunday, even if not configured yet
+      const dayData: DayData[] = []
       
-      // Initialize all 3 servos
-      for (let i = 1; i <= 3; i++) {
-        const config = configs?.find(c => c.servo_number === i)
+      // Initialize Saturday (6) and Sunday (0)
+      for (const dayOfWeek of [6, 0]) {
+        const dayName = dayOfWeek === 6 ? 'Saturday' : 'Sunday'
+        const config = configs?.find(c => c.day_of_week === dayOfWeek)
         
-        if (config) {
-          // Fetch schedules for this configured servo
-          const { data: schedules, error: schedulesError } = await supabase
-            .from('schedules')
+        if (config && config.is_active) {
+          // Fetch medications for this day from time_frame_medications
+          const { data: medications, error: medsError } = await supabase
+            .from('time_frame_medications')
             .select('*')
-            .eq('servo_config_id', config.id)
+            .eq('day_config_id', config.id)
             .order('time')
 
-          if (schedulesError) {
-            console.error(`❌ Error fetching schedules for servo ${i}:`, schedulesError)
+          if (medsError) {
+            console.error(`❌ Error fetching medications for ${dayName}:`, medsError)
           }
 
-          const schedulesList = schedules?.map((s: any) => ({
-            id: s.id,
-            time: s.time,
-            date: s.date,
-            is_daily: s.is_daily
-          })) || []
+          // Group medications by time frame
+          const morningMeds: Medication[] = []
+          const afternoonMeds: Medication[] = []
+          const eveningMeds: Medication[] = []
 
-          servoData.push({
-            id: config.servo_number,
-            name: `Servo ${config.servo_number}`,
-            medication: config.medication_name || '',
-            schedules: schedulesList,
-            status: 'ready', // Always show as ready unless actively dispensing
-            is_occupied: false // Reset to false
+          medications?.forEach((med: any) => {
+            const medication: Medication = {
+              id: med.id,
+              medication_name: med.medication_name,
+              time_frame: med.time_frame
+            }
+            
+            if (med.time_frame === 'morning') {
+              morningMeds.push(medication)
+            } else if (med.time_frame === 'afternoon') {
+              afternoonMeds.push(medication)
+            } else if (med.time_frame === 'evening') {
+              eveningMeds.push(medication)
+            }
+          })
+
+          // Get time frame times from day_config
+          const timeFrameTimes = {
+            morning: config.morning_time ? config.morning_time.slice(0, 5) : null,
+            afternoon: config.afternoon_time ? config.afternoon_time.slice(0, 5) : null,
+            evening: config.evening_time ? config.evening_time.slice(0, 5) : null
+          }
+
+          dayData.push({
+            dayOfWeek: config.day_of_week,
+            name: dayName,
+            medications: {
+              morning: morningMeds.sort((a, b) => a.medication_name.localeCompare(b.medication_name)),
+              afternoon: afternoonMeds.sort((a, b) => a.medication_name.localeCompare(b.medication_name)),
+              evening: eveningMeds.sort((a, b) => a.medication_name.localeCompare(b.medication_name))
+            },
+            timeFrameTimes: timeFrameTimes,
+            status: 'ready',
+            servoNumber: 1, // Both use servo1
+            dispensedTimeFrames: [] // Reset on fetch - will be tracked in state
           })
         } else {
-          // Servo not configured yet - show as empty
-          servoData.push({
-            id: i,
-            name: `Servo ${i}`,
-            medication: '',
-            schedules: [],
+          // Day not configured yet - show as empty
+          dayData.push({
+            dayOfWeek: dayOfWeek,
+            name: dayName,
+            medications: {
+              morning: [],
+              afternoon: [],
+              evening: []
+            },
+            timeFrameTimes: {
+              morning: null,
+              afternoon: null,
+              evening: null
+            },
             status: 'ready',
-            is_occupied: false
+            servoNumber: 1,
+            dispensedTimeFrames: []
           })
         }
       }
 
-      console.log('✅ Servo data loaded:', servoData.map(s => ({
-        id: s.id,
-        medication: s.medication,
-        schedulesCount: s.schedules.length
+      console.log('✅ Day data loaded:', dayData.map(d => ({
+        dayOfWeek: d.dayOfWeek,
+        name: d.name,
+        morningCount: d.medications.morning.length,
+        afternoonCount: d.medications.afternoon.length,
+        eveningCount: d.medications.evening.length
       })))
       
-      setServos(servoData)
+      setDays(dayData)
     } catch (error: any) {
-      console.error('❌ Error fetching servo data:', error)
+      console.error('❌ Error fetching day data:', error)
       console.error('Error details:', {
         message: error?.message,
         details: error?.details,
@@ -687,8 +793,8 @@ export default function Home() {
     }
   }
 
-  // Main fetchServoData function - resolves owner and fetches data
-  const fetchServoData = async () => {
+  // Main fetchDayData function - resolves owner and fetches data
+  const fetchDayData = async () => {
     try {
       const session = await refreshSessionIfNeeded()
       if (!session) return
@@ -701,13 +807,13 @@ export default function Home() {
       }
       
       // Use resolved values directly
-      await fetchServoDataWithUserId(resolved.ownerUserId, resolved.isOwner)
+      await fetchDayDataWithUserId(resolved.ownerUserId, resolved.isOwner)
     } catch (error: any) {
-      console.error('❌ Error in fetchServoData:', error)
+      console.error('❌ Error in fetchDayData:', error)
     }
   }
 
-  const handleDispense = async (servoId: number) => {
+  const handleDispense = async (dayOfWeek: number, timeFrame?: 'morning' | 'afternoon' | 'evening') => {
     // Check Pi connection first
     if (!piConnected) {
       alert('⚠️ Not connected to Raspberry Pi! Make sure the server is running.')
@@ -715,39 +821,181 @@ export default function Home() {
     }
 
     try {
-      const servo = servos.find(s => s.id === servoId)
-      const medicationName = servo?.medication || 'Medicine'
-
-      if (!medicationName) {
-        alert('Please add a medication first!')
+      const day = days.find(d => d.dayOfWeek === dayOfWeek)
+      if (!day) return
+      
+      const currentTime = new Date(getPhilippineTime())
+      const currentHour = currentTime.getHours()
+      const currentMinute = currentTime.getMinutes()
+      const currentTimeMinutes = currentHour * 60 + currentMinute
+      const currentTimeStr = `${String(currentHour).padStart(2, '0')}:${String(currentMinute).padStart(2, '0')}`
+      
+      // If timeFrame provided, dispense that bundle; otherwise find next available bundle
+      let targetTimeFrame: 'morning' | 'afternoon' | 'evening' | null = timeFrame || null
+      let isEarlyDispense = false
+      
+      // Check if this time frame was already dispensed (ONCE PER TIME FRAME LIMIT)
+      const dispensedFrames = day.dispensedTimeFrames || []
+      if (targetTimeFrame && dispensedFrames.includes(targetTimeFrame)) {
+        alert(`⚠️ ${TIME_FRAMES[targetTimeFrame].label} bundle has already been dispensed for ${day.name}. Each time frame can only be dispensed once per day.`)
         return
       }
+      
+      if (!targetTimeFrame) {
+        // Find next available time frame (progressive) - skip already dispensed ones
+        const frameOrder = ['morning', 'afternoon', 'evening'] as const
+        
+        // Find first time frame that hasn't been dispensed
+        for (const frame of frameOrder) {
+          if (!dispensedFrames.includes(frame)) {
+            targetTimeFrame = frame
+            break
+          }
+        }
+        
+        // If all time frames are dispensed, move to next day
+        if (!targetTimeFrame) {
+          const nextDayOfWeek = dayOfWeek === 6 ? 0 : 6 // Saturday -> Sunday, Sunday -> Saturday
+          const nextDay = days.find(d => d.dayOfWeek === nextDayOfWeek)
+          if (nextDay) {
+            alert(`✅ All time frames for ${day.name} have been dispensed. Moving to ${nextDay.name}.`)
+            // Reset current day's dispensed frames and move to next day
+            setDays(prevDays => 
+              prevDays.map(d => 
+                d.dayOfWeek === dayOfWeek 
+                  ? { ...d, dispensedTimeFrames: [] }
+                  : d
+              )
+            )
+            // Try to dispense morning of next day
+            if (nextDay.medications.morning.length > 0) {
+              await handleDispense(nextDayOfWeek, 'morning')
+            } else {
+              alert(`No medications configured for ${nextDay.name} Morning.`)
+            }
+            return
+          }
+        }
+      }
+      
+      // Check if we're trying to dispense a time frame that hasn't started yet
+      // Allow early dispense 30 minutes before the time frame starts
+      const frameInfo = TIME_FRAMES[targetTimeFrame]
+      const [startHour, startMin] = frameInfo.start.split(':').map(Number)
+      const startMinutes = startHour * 60 + startMin
+      const earlyDispenseWindow = startMinutes - 30 // 30 minutes before
+      
+      // Determine if current time is within the time frame or early dispense window
+      let isInTimeFrame = false
+      let isInEarlyWindow = false
+      
+      if (targetTimeFrame === 'morning') {
+        // Morning: 5:00 (300 min) to 12:00 (720 min)
+        isInTimeFrame = currentTimeMinutes >= 300 && currentTimeMinutes <= 720
+        // Early window: 30 min before 5:00 = 4:30 (270 min) to 4:59 (299 min)
+        isInEarlyWindow = currentTimeMinutes >= 270 && currentTimeMinutes < 300
+      } else if (targetTimeFrame === 'afternoon') {
+        // Afternoon: 12:01 (721 min) to 19:00 (1140 min)
+        isInTimeFrame = currentTimeMinutes >= 721 && currentTimeMinutes <= 1140
+        // Early window: 30 min before 12:01 = 11:31 (691 min) to 12:00 (720 min)
+        isInEarlyWindow = currentTimeMinutes >= 691 && currentTimeMinutes < 721
+      } else if (targetTimeFrame === 'evening') {
+        // Evening: 19:01 (1141 min) to 23:59 (1439 min) OR 0:00 (0 min) to 3:00 (180 min)
+        isInTimeFrame = currentTimeMinutes >= 1141 || currentTimeMinutes <= 180
+        // Early window: 30 min before 19:01 = 18:31 (1111 min) to 19:00 (1140 min)
+        // OR 30 min before 0:00 (wraps around) = 23:30 (1410 min) to 23:59 (1439 min)
+        isInEarlyWindow = (currentTimeMinutes >= 1111 && currentTimeMinutes < 1141) || 
+                          (currentTimeMinutes >= 1410 && currentTimeMinutes <= 1439)
+      }
+      
+      // Check if trying to dispense a time frame that's already passed (progressive check)
+      const lastDispensedTime = day.lastDispensedTime
+      if (lastDispensedTime) {
+        const [lastHour, lastMin] = lastDispensedTime.split(':').map(Number)
+        const lastMinutes = lastHour * 60 + lastMin
+        
+        let lastFrame = ''
+        if (lastMinutes >= 300 && lastMinutes <= 720) lastFrame = 'morning'
+        else if (lastMinutes >= 721 && lastMinutes <= 1140) lastFrame = 'afternoon'
+        else if (lastMinutes >= 1141 || lastMinutes <= 180) lastFrame = 'evening'
+        
+        const frameOrder = { morning: 1, afternoon: 2, evening: 3 }
+        // If trying to dispense an earlier time frame that was already done, block it
+        if (frameOrder[targetTimeFrame] < frameOrder[lastFrame as keyof typeof frameOrder]) {
+          alert(`⚠️ ${TIME_FRAMES[targetTimeFrame].label} bundle was already dispensed. Next is ${lastFrame === 'morning' ? 'Afternoon' : 'Evening'}.`)
+          return
+        }
+      }
+      
+      // If not in time frame and not in early window, block dispense
+      if (!isInTimeFrame && !isInEarlyWindow) {
+        const nextFrameStart = frameInfo.start
+        alert(`⚠️ ${TIME_FRAMES[targetTimeFrame].label} time frame hasn't started yet.\n\nTime frame: ${frameInfo.start} - ${frameInfo.end}\nCurrent time: ${currentTimeStr}\n\nYou can dispense early starting 30 minutes before the time frame (30 min before ${nextFrameStart}).`)
+        return
+      }
+      
+      // If in early window, show warning
+      if (isInEarlyWindow) {
+        isEarlyDispense = true
+        const confirmMessage = `⚠️ Early Dispense Warning\n\nYou are dispensing ${TIME_FRAMES[targetTimeFrame].label} bundle 30 minutes before the time frame starts.\n\nTime frame: ${frameInfo.start} - ${frameInfo.end}\nCurrent time: ${currentTimeStr}\n\nAre you sure you want to dispense early?`
+        if (!confirm(confirmMessage)) {
+          return // User cancelled
+        }
+      }
+      
+      // Get all medications in the target time frame (bundle)
+      const frameMedications = day.medications[targetTimeFrame] || []
+      
+      if (frameMedications.length === 0) {
+        alert(`No medications in ${TIME_FRAMES[targetTimeFrame].label} to dispense!`)
+        return
+      }
+      
+      const medicationNames = frameMedications.map(m => m.medication_name).join(', ')
 
       // Update UI to show dispensing
-      setServos(prevServos => 
-        prevServos.map(s => 
-          s.id === servoId 
-            ? { ...s, status: 'dispensing' }
-            : s
+      setDays(prevDays => 
+        prevDays.map(d => 
+          d.dayOfWeek === dayOfWeek 
+            ? { ...d, status: 'dispensing' }
+            : d
         )
       )
 
-      // Send command to Raspberry Pi
-      const response = await dispenseToPi(`servo${servoId}`, medicationName)
-      console.log('✅ Dispense response:', response)
+      // Dispense ALL medications in the time frame bundle (servo spins once)
+      const response = await dispenseToPi('servo1', medicationNames)
+      console.log('✅ Manual dispense bundle response:', response)
 
-      // Log manual dispense success
+          // Update last dispensed time and mark this time frame as dispensed
+          setDays(prevDays => 
+            prevDays.map(d => {
+              if (d.dayOfWeek === dayOfWeek) {
+                const updatedDispensedFrames = [...(d.dispensedTimeFrames || []), targetTimeFrame]
+                return { 
+                  ...d, 
+                  status: 'dispensing', 
+                  lastDispensedTime: currentTimeStr,
+                  dispensedTimeFrames: updatedDispensedFrames
+                }
+              }
+              return d
+            })
+          )
+
+      // Log manual dispense success for each medication in bundle
       try {
         const { data: { session } } = await supabase.auth.getSession()
         if (session?.user) {
-          await supabase.from('dispense_history').insert({
-            user_id: session.user.id,
-            servo_number: servoId,
-            medication_name: medicationName,
-            action: 'manual',
-            status: 'success',
-            notes: 'Manual dispense from dashboard'
-          })
+          for (const med of frameMedications) {
+            await supabase.from('dispense_history').insert({
+              user_id: session.user.id,
+              servo_number: 1, // Always servo1
+              medication_name: med.medication_name,
+              action: 'manual',
+              status: 'success',
+              notes: `${isEarlyDispense ? 'Early ' : ''}Manual dispense bundle from ${day?.name || 'dashboard'} at ${currentTimeStr} (${targetTimeFrame}) - ${medicationNames}`
+            })
+          }
         }
       } catch (logErr) {
         console.error('Log manual-dispense error:', logErr)
@@ -755,258 +1003,409 @@ export default function Home() {
 
       // Reset status after 3 seconds
       setTimeout(() => {
-        setServos(prevServos => 
-          prevServos.map(s => 
-            s.id === servoId 
-              ? { ...s, status: 'ready' }
-              : s
+        setDays(prevDays => 
+          prevDays.map(d => 
+            d.dayOfWeek === dayOfWeek 
+              ? { ...d, status: 'ready' }
+              : d
           )
         )
       }, 3000)
 
       } catch (error: any) {
-      console.error('Error dispensing:', error)
+      console.error('Error dispensing bundle:', error)
       alert(`❌ Error: ${error.message}`)
       // Log manual dispense error
       try {
         const { data: { session } } = await supabase.auth.getSession()
-        if (session?.user) {
-          await supabase.from('dispense_history').insert({
-            user_id: session.user.id,
-            servo_number: servoId,
-            medication_name: servos.find(s => s.id === servoId)?.medication || '',
-            action: 'manual',
-            status: 'error',
-            notes: error instanceof Error ? error.message : (error?.message || 'Manual dispense error')
-          })
+        if (session?.user && frameMedications) {
+          for (const med of frameMedications) {
+            await supabase.from('dispense_history').insert({
+              user_id: session.user.id,
+              servo_number: 1, // Always servo1
+              medication_name: med.medication_name,
+              action: 'manual',
+              status: 'error',
+              notes: error instanceof Error ? error.message : (error?.message || 'Manual dispense bundle error')
+            })
+          }
         }
       } catch (logErr) {
         console.error('Log manual-dispense error (insert) failed:', logErr)
       }
       
       // Reset status on error
-      setServos(prevServos => 
-        prevServos.map(s => 
-          s.id === servoId 
-            ? { ...s, status: 'ready' }
-            : s
+      setDays(prevDays => 
+        prevDays.map(d => 
+          d.dayOfWeek === dayOfWeek 
+            ? { ...d, status: 'ready' }
+            : d
         )
       )
     }
   }
 
-  const handleEditSchedule = (servoId: number) => {
-    const servo = servos.find(s => s.id === servoId)
-    setFormData({
-      medication_name: servo?.medication || '',
-      time: '',
-      date: new Date().toISOString().split('T')[0], // Today's date
-      is_daily: true
-    })
-    setEditingServo(servoId)
-  }
-
-  const handleCloseModal = () => {
-    setEditingServo(null)
-    setFormData({
-      medication_name: '',
-      time: '',
-      date: new Date().toISOString().split('T')[0], // Today's date
-      is_daily: true
+  const handleAddMedication = (dayOfWeek: number, timeFrame: 'morning' | 'afternoon' | 'evening') => {
+    setAddingMedication({ dayOfWeek, timeFrame })
+    setEditingMedication(null)
+    setEditingTimeFrameTime(null)
+    setNewMedication({
+      name: ''
     })
   }
 
-  const handleDeleteSchedule = async (scheduleId: string) => {
+  const handleEditMedication = (medication: Medication, dayOfWeek: number, timeFrame: 'morning' | 'afternoon' | 'evening') => {
+    setEditingMedication({
+      id: medication.id,
+      name: medication.medication_name,
+      dayOfWeek,
+      timeFrame
+    })
+    setAddingMedication(null)
+    setEditingTimeFrameTime(null)
+    setNewMedication({
+      name: medication.medication_name
+    })
+  }
+
+  const handleEditTimeFrameTime = (dayOfWeek: number, timeFrame: 'morning' | 'afternoon' | 'evening') => {
+    const day = days.find(d => d.dayOfWeek === dayOfWeek)
+    const currentTime = day?.timeFrameTimes[timeFrame] || TIME_FRAMES[timeFrame].default
+    setEditingTimeFrameTime({ dayOfWeek, timeFrame })
+    setAddingMedication(null)
+    setEditingMedication(null)
+    setTimeFrameTime(currentTime)
+  }
+
+  const handleSaveTimeFrameTime = async () => {
+    if (!editingTimeFrameTime) return
+
+    if (!timeFrameTime || timeFrameTime.trim() === '') {
+      alert('Please enter a time')
+      return
+    }
+
     try {
-      // Refresh auth session first and handle JWT expiration
       const session = await refreshSessionIfNeeded()
-      if (!session) return // Already handled redirect
+      if (!session) return
+
+      let effectiveUserId = ownerUserId || session.user.id
+      if (!isOwner && effectiveUserId === session.user.id && ownerUserId) {
+        effectiveUserId = ownerUserId
+      }
+
+      const dayOfWeek = editingTimeFrameTime.dayOfWeek
+      const timeFrame = editingTimeFrameTime.timeFrame
+      const dayName = dayOfWeek === 6 ? 'Saturday' : 'Sunday'
+      const frameInfo = TIME_FRAMES[timeFrame as keyof typeof TIME_FRAMES]
+
+      // Validate time is within time frame range
+      const medTime = timeFrameTime.slice(0, 5) // HH:MM
+      const [medHour, medMin] = medTime.split(':').map(Number)
+      const medMinutes = medHour * 60 + medMin
       
-      const { error } = await supabase
-        .from('schedules')
-        .delete()
-        .eq('id', scheduleId)
+      const [startHour, startMin] = frameInfo.start.split(':').map(Number)
+      const startMinutes = startHour * 60 + startMin
+      const [endHour, endMin] = frameInfo.end.split(':').map(Number)
+      const endMinutes = endHour * 60 + endMin
       
-      if (error) {
-        // Handle JWT expiration
-        if (error.message?.includes('JWT') || error.message?.includes('expired')) {
-          const refreshedSession = await refreshSessionIfNeeded()
-          if (!refreshedSession) return
-          
-          // Retry delete
-          const retryResult = await supabase
-            .from('schedules')
-            .delete()
-            .eq('id', scheduleId)
-          
-          if (retryResult.error) throw retryResult.error
-        } else {
-          throw error
-        }
+      // Handle evening frame that wraps around midnight
+      let isInRange = false
+      if (timeFrame === 'evening') {
+        isInRange = medMinutes >= 1141 || medMinutes <= 180
+      } else {
+        isInRange = medMinutes >= startMinutes && medMinutes <= endMinutes
       }
       
-      await fetchServoData()
+      if (!isInRange) {
+        alert(`⚠️ Invalid Time\n\nTime "${timeFrameTime.slice(0, 5)}" is outside the allowed range for ${frameInfo.label}.\n\nAllowed time range: ${frameInfo.start} - ${frameInfo.end}\n\nPlease select a time within this range.`)
+        return
+      }
+
+      // Get or create day_config
+      const { data: existingConfig } = await supabase
+        .from('day_config')
+        .select('id')
+        .eq('user_id', effectiveUserId)
+        .eq('day_of_week', dayOfWeek)
+        .maybeSingle()
+
+      let dayConfigId
+
+      if (existingConfig) {
+        dayConfigId = existingConfig.id
+      } else {
+        // Create new day_config
+        const { data: newConfig, error: insertError } = await supabase
+          .from('day_config')
+          .insert({
+            user_id: effectiveUserId,
+            day_of_week: dayOfWeek,
+            medication_name: '',
+            is_active: true
+          })
+          .select()
+          .single()
+
+        if (insertError) throw insertError
+        dayConfigId = newConfig.id
+      }
+
+      // Update time for this time frame
+      const updateData: any = {}
+      if (timeFrame === 'morning') {
+        updateData.morning_time = timeFrameTime
+      } else if (timeFrame === 'afternoon') {
+        updateData.afternoon_time = timeFrameTime
+      } else if (timeFrame === 'evening') {
+        updateData.evening_time = timeFrameTime
+      }
+      updateData.updated_at = new Date().toISOString()
+
+      const { error: updateError } = await supabase
+        .from('day_config')
+        .update(updateData)
+        .eq('id', dayConfigId)
+
+      if (updateError) {
+        console.error(`Error updating time frame time:`, updateError)
+        throw updateError
+      }
+
+      await fetchDayData()
+      setEditingTimeFrameTime(null)
+      setTimeFrameTime('')
+      alert(`✅ ${frameInfo.label} time set to ${timeFrameTime.slice(0, 5)} for ${dayName}!`)
     } catch (error: any) {
-      console.error('Error deleting schedule:', error)
-      alert(`Error deleting schedule: ${error?.message || 'Unknown error'}`)
+      console.error('Error saving time frame time:', error)
+      alert(`Error: ${error?.message || 'Unknown error'}`)
     }
   }
 
   const handleSaveMedication = async () => {
-    if (!editingServo) return
+    const isEditing = editingMedication !== null
+    const context = isEditing ? editingMedication : addingMedication
+    if (!context) return
 
-    // Validate medication name is required
-    if (!formData.medication_name || formData.medication_name.trim() === '') {
+    if (!newMedication.name || newMedication.name.trim() === '') {
       alert('Please enter a medication name')
       return
     }
 
     try {
-      // Refresh auth session first and handle JWT expiration
       const session = await refreshSessionIfNeeded()
-      if (!session) {
-        // Already handled redirect to login
-        throw new Error('No user session')
-      }
+      if (!session) return
 
-      // Use ownerUserId for caregivers, or session.user.id for owners
-      // This ensures both owner and caregiver edit the same medications
       let effectiveUserId = ownerUserId || session.user.id
-      
-      // Verify we're using the correct user_id for caregivers
       if (!isOwner && effectiveUserId === session.user.id && ownerUserId) {
-        console.warn('⚠️ Caregiver is editing their own data, should use ownerUserId:', ownerUserId)
         effectiveUserId = ownerUserId
       }
-      
-      console.log('💾 Saving medication with user_id:', effectiveUserId, '(isOwner:', isOwner, ')')
 
-      const { data: configs } = await supabase
-        .from('servo_config')
-        .select('id, medication_name')
-        .eq('user_id', effectiveUserId)
-        .eq('servo_number', editingServo)
+      const dayOfWeek = context.dayOfWeek
+      const timeFrame = context.timeFrame
+      const dayName = dayOfWeek === 6 ? 'Saturday' : 'Sunday'
 
-      const configId = configs?.[0]?.id
-      const currentMedication = configs?.[0]?.medication_name
-
-      // Check if medication name is changing and there are existing schedules
-      if (configId && currentMedication && currentMedication !== formData.medication_name.trim()) {
-        const { data: existingSchedules } = await supabase
-          .from('schedules')
-          .select('id')
-          .eq('servo_config_id', configId)
-
-        if (existingSchedules && existingSchedules.length > 0) {
-          const keepSchedules = confirm(
-            `You're changing the medication from "${currentMedication}" to "${formData.medication_name}".\n\n` +
-            `Do you want to keep the existing schedules? (Click OK to keep, Cancel to delete them)`
-          )
-
-          if (!keepSchedules) {
-            // Delete all schedules for this servo
-            await supabase
-              .from('schedules')
-              .delete()
-              .eq('servo_config_id', configId)
-            console.log('🗑️ Deleted all schedules for medication change')
-          }
-        }
-      }
-
-      // Save medication name (required)
-      if (!configId) {
-        // Create new config
-        const { error } = await supabase
-          .from('servo_config')
-          .insert({
-            user_id: effectiveUserId,
-            servo_number: editingServo,
-            medication_name: formData.medication_name.trim(),
-            is_occupied: true
-          })
-        if (error) {
-          console.error('Insert error:', error)
-          throw error
-        }
-      } else {
-        // Update existing config
-        const { error } = await supabase
-          .from('servo_config')
+      if (isEditing) {
+        // Update existing medication (name only, time is at time frame level)
+        const { error: updateError } = await supabase
+          .from('time_frame_medications')
           .update({
-            medication_name: formData.medication_name.trim(),
-            is_occupied: true
+            medication_name: newMedication.name.trim(),
+            updated_at: new Date().toISOString()
           })
-          .eq('id', configId)
-        if (error) {
-          console.error('Update error:', error)
-          throw error
-        }
-      }
+          .eq('id', editingMedication.id)
 
-      // Add schedule ONLY if time and date are both provided (optional)
-      if (formData.time && formData.date) {
-        const { data: config } = await supabase
-          .from('servo_config')
+        if (updateError) {
+          console.error(`Error updating medication:`, updateError)
+          throw updateError
+        }
+
+        await fetchDayData()
+        setEditingMedication(null)
+        setNewMedication({ name: '', time: '' })
+        alert(`✅ ${newMedication.name} updated in ${dayName} ${TIME_FRAMES[timeFrame].label}!`)
+      } else {
+        // Get or create day_config for new medication
+        const { data: existingConfig } = await supabase
+          .from('day_config')
           .select('id')
           .eq('user_id', effectiveUserId)
-          .eq('servo_number', editingServo)
-          .single()
+          .eq('day_of_week', dayOfWeek)
+          .maybeSingle()
 
-        if (config) {
-          const { error: scheduleError } = await supabase
-            .from('schedules')
+        let dayConfigId
+
+        if (existingConfig) {
+          dayConfigId = existingConfig.id
+        } else {
+          // Create new day_config
+          const { data: newConfig, error: insertError } = await supabase
+            .from('day_config')
             .insert({
-              servo_config_id: config.id,
-              time: formData.time,
-              date: formData.date,
-              is_daily: formData.is_daily
+              user_id: effectiveUserId,
+              day_of_week: dayOfWeek,
+              medication_name: '', // No single medication name anymore
+              is_active: true
             })
-          if (scheduleError) {
-            console.error('Schedule insert error:', scheduleError)
-            // Don't throw - allow saving medication name even if schedule fails
-            console.log('⚠️ Medication saved, but schedule failed to save')
-          }
-        }
-      }
+            .select()
+            .single()
 
-      await fetchServoData()
-      handleCloseModal()
-      alert('✅ Medication saved! You can now dispense manually.')
+          if (insertError) throw insertError
+          dayConfigId = newConfig.id
+        }
+
+        // Save new medication to time_frame_medications table (time is at time frame level, not per medication)
+        const { error: medError } = await supabase
+          .from('time_frame_medications')
+          .insert({
+            day_config_id: dayConfigId,
+            time_frame: timeFrame,
+            medication_name: newMedication.name.trim(),
+            time: '00:00' // Placeholder - actual time is stored in day_config.time_frame_time
+          })
+
+        if (medError) {
+          console.error(`Error saving medication:`, medError)
+          throw medError
+        }
+
+        await fetchDayData()
+        setAddingMedication(null)
+        setNewMedication({ name: '', time: '' })
+        alert(`✅ ${newMedication.name} added to ${dayName} ${TIME_FRAMES[timeFrame].label}!`)
+      }
     } catch (error: any) {
       console.error('Error saving medication:', error)
-      console.error('Error details:', {
-        message: error?.message,
-        details: error?.details,
-        hint: error?.hint,
-        code: error?.code
-      })
-      const errorMessage = error?.message || error?.details || 'Unknown error'
-      alert(`Error saving medication: ${errorMessage}`)
+      alert(`Error: ${error?.message || 'Unknown error'}`)
     }
   }
 
+  const handleRemoveMedication = async (medicationId: string) => {
+    if (!confirm('Remove this medication?')) return
+
+    try {
+      const { error } = await supabase
+        .from('time_frame_medications')
+        .delete()
+        .eq('id', medicationId)
+
+      if (error) throw error
+
+      await fetchDayData()
+      alert('✅ Medication removed!')
+    } catch (error: any) {
+      console.error('Error removing medication:', error)
+      alert(`Error: ${error?.message || 'Unknown error'}`)
+    }
+  }
+
+  const handleCopyToOtherFrames = async (dayOfWeek: number, sourceTimeFrame: 'morning' | 'afternoon' | 'evening') => {
+    const day = days.find(d => d.dayOfWeek === dayOfWeek)
+    if (!day) return
+
+    const sourceMedications = day.medications[sourceTimeFrame]
+    if (sourceMedications.length === 0) {
+      alert(`No medications in ${TIME_FRAMES[sourceTimeFrame].label} to copy`)
+      return
+    }
+
+    if (!confirm(`Copy ${sourceMedications.length} medication(s) from ${TIME_FRAMES[sourceTimeFrame].label} to the other time frames?`)) {
+      return
+    }
+
+    try {
+      const session = await refreshSessionIfNeeded()
+      if (!session) return
+
+      let effectiveUserId = ownerUserId || session.user.id
+      if (!isOwner && effectiveUserId === session.user.id && ownerUserId) {
+        effectiveUserId = ownerUserId
+      }
+
+      // Get day_config_id
+      const { data: config } = await supabase
+        .from('day_config')
+        .select('id')
+        .eq('user_id', effectiveUserId)
+        .eq('day_of_week', dayOfWeek)
+        .single()
+
+      if (!config) {
+        alert('Day config not found. Please add a medication first.')
+        return
+      }
+
+      // Auto-calculate dates
+      const nearestSaturday = getNearestSaturday()
+      const nearestSunday = getNearestSunday()
+      const dayDate = dayOfWeek === 6 ? formatDate(nearestSaturday) : formatDate(nearestSunday)
+
+      // Copy to other time frames
+      const targetFrames = (['morning', 'afternoon', 'evening'] as const).filter(tf => tf !== sourceTimeFrame)
+
+      for (const targetFrame of targetFrames) {
+        for (const med of sourceMedications) {
+          // Check if already exists (time is at time frame level, not per medication)
+          const { data: existing } = await supabase
+            .from('time_frame_medications')
+            .select('id')
+            .eq('day_config_id', config.id)
+            .eq('time_frame', targetFrame)
+            .eq('medication_name', med.medication_name)
+            .maybeSingle()
+
+          if (!existing) {
+            // Insert new medication
+            await supabase
+              .from('time_frame_medications')
+              .insert({
+                day_config_id: config.id,
+                time_frame: targetFrame,
+                medication_name: med.medication_name,
+                time: '00:00' // Placeholder - actual time is stored in day_config.time_frame_time
+              })
+          }
+        }
+      }
+
+      await fetchDayData()
+      alert(`✅ Copied ${sourceMedications.length} medication(s) to ${targetFrames.map(tf => TIME_FRAMES[tf].label).join(' and ')}!`)
+    } catch (error: any) {
+      console.error('Error copying medications:', error)
+      alert(`Error: ${error?.message || 'Unknown error'}`)
+    }
+  }
+
+  const handleCloseModal = () => {
+    setAddingMedication(null)
+    setEditingMedication(null)
+    setEditingTimeFrameTime(null)
+    setNewMedication({ name: '' })
+    setTimeFrameTime('')
+  }
+
+
   return (
-    <div className="min-h-screen bg-gray-50 p-4 md:p-8">
-      {/* Header */}
-      <div className="flex justify-between items-center mb-8">
-        <h1 className="text-3xl font-bold text-gray-800">PillPal Dashboard</h1>
-        <div className="flex gap-4">
+    <div className="min-h-screen bg-gray-50 p-2 sm:p-4 md:p-8 pb-4 sm:pb-8">
+      {/* Header - More compact on mobile */}
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 sm:gap-0 mb-3 sm:mb-8">
+        <h1 className="text-lg sm:text-2xl md:text-3xl font-bold text-gray-800">PillPal Dashboard</h1>
+        <div className="flex flex-wrap gap-1.5 sm:gap-3 md:gap-4">
           <button
             onClick={() => router.push('/history')}
-            className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded"
+            className="px-2.5 py-1.5 sm:px-4 sm:py-2 text-xs sm:text-base text-gray-700 hover:bg-gray-100 rounded transition"
           >
             History
           </button>
           <button
             onClick={() => router.push('/profile')}
-            className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded"
+            className="px-2.5 py-1.5 sm:px-4 sm:py-2 text-xs sm:text-base text-gray-700 hover:bg-gray-100 rounded transition"
           >
             Profile
           </button>
           <button
             onClick={signOut}
-            className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600"
+            className="px-2.5 py-1.5 sm:px-4 sm:py-2 text-xs sm:text-base bg-red-500 text-white rounded hover:bg-red-600 transition whitespace-nowrap"
           >
             Sign Out
           </button>
@@ -1015,17 +1414,17 @@ export default function Home() {
 
       {/* Caregiver notice */}
       {!isOwner && (
-        <div className="p-4 rounded-lg mb-6 bg-blue-100 text-blue-800 border-blue-300 border-2">
+        <div className="p-2 sm:p-4 rounded-lg mb-2 sm:mb-6 bg-blue-100 text-blue-800 border-blue-300 border text-xs sm:text-base">
           👤 You are viewing as a caregiver for this account.
         </div>
       )}
 
       {/* Pi Connection Status */}
-      <div className={`p-4 rounded-lg mb-6 ${
+      <div className={`p-2 sm:p-4 rounded-lg mb-3 sm:mb-6 text-xs sm:text-base ${
         piConnected 
           ? 'bg-green-100 text-green-800 border-green-300' 
           : 'bg-yellow-100 text-yellow-800 border-yellow-300'
-      } border-2`}>
+      } border`}>
         {piConnected ? (
           <>✅ Connected to Raspberry Pi</>
         ) : (
@@ -1035,140 +1434,285 @@ export default function Home() {
 
       {/* Caregiver management moved to Profile page */}
 
-      {/* Servo Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {servos.map((servo) => (
-          <div key={servo.id} className="bg-white rounded-lg shadow-lg p-6 border">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-2xl font-bold text-gray-800">{servo.name}</h2>
-              <span className={`px-3 py-1 rounded-full text-sm ${
-                servo.status === 'ready' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
+      {/* Day Cards - Saturday and Sunday */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-6">
+        {days.map((day) => (
+          <div key={day.dayOfWeek} className="bg-white rounded-lg shadow-md sm:shadow-lg p-3 sm:p-6 border">
+            <div className="flex justify-between items-center mb-2 sm:mb-4">
+              <h2 className="text-lg sm:text-2xl font-bold text-gray-800">{day.name}</h2>
+              <span className={`px-2 py-0.5 sm:px-3 sm:py-1 rounded-full text-xs sm:text-sm ${
+                day.status === 'ready' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
               }`}>
-                {servo.status}
+                {day.status}
               </span>
             </div>
 
-            <div className="mb-4">
-              <p className="text-sm text-gray-600 mb-1">Medication:</p>
-              <p className="text-lg font-semibold text-gray-800">
-                {servo.medication || 'Not assigned'}
-              </p>
-            </div>
-
-            {/* Schedules */}
-            {servo.schedules.length > 0 && (
-              <div className="mb-4">
-                <p className="text-sm font-semibold text-gray-700 mb-2">Schedules:</p>
-                <div className="space-y-1">
-                  {servo.schedules.map((schedule) => (
-                    <div key={schedule.id} className="bg-gray-50 p-2 rounded text-sm flex justify-between items-center">
-                      <div>
-                        <span className="font-medium">{schedule.time}</span> - {schedule.date}
-                        {schedule.is_daily && <span className="text-blue-600 ml-2">(Daily)</span>}
+            {/* Time Frames with Multiple Medications - Enhanced UI */}
+            <div className="mb-4 sm:mb-6 space-y-3">
+              {(['morning', 'afternoon', 'evening'] as const).map((timeFrame) => {
+                const medications = day.medications[timeFrame]
+                const frameInfo = TIME_FRAMES[timeFrame]
+                const frameColors = {
+                  morning: 'bg-gradient-to-r from-yellow-50 to-orange-50 border-yellow-200',
+                  afternoon: 'bg-gradient-to-r from-blue-50 to-cyan-50 border-blue-200',
+                  evening: 'bg-gradient-to-r from-purple-50 to-pink-50 border-purple-200'
+                }
+                const frameIconColors = {
+                  morning: 'text-yellow-600',
+                  afternoon: 'text-blue-600',
+                  evening: 'text-purple-600'
+                }
+                
+                return (
+                  <div key={timeFrame} className={`${frameColors[timeFrame]} p-3 sm:p-4 rounded-lg border-2 shadow-sm`}>
+                    <div className="flex justify-between items-center mb-2 sm:mb-3">
+                      <div className="flex items-center gap-1.5 sm:gap-2">
+                        <span className={`text-base sm:text-lg ${frameIconColors[timeFrame]}`}>
+                          {timeFrame === 'morning' ? '🌅' : timeFrame === 'afternoon' ? '☀️' : '🌙'}
+                        </span>
+                        <div>
+                          <span className="font-bold text-sm sm:text-base text-gray-800">{frameInfo.label}</span>
+                          <span className="text-xs text-gray-600 ml-1 sm:ml-2">({frameInfo.start} - {frameInfo.end})</span>
+                        </div>
                       </div>
-                      <button
-                        onClick={() => handleDeleteSchedule(schedule.id)}
-                        className="text-red-500 hover:text-red-700 text-xs px-2 py-1 rounded hover:bg-red-50"
-                      >
-                        Delete
-                      </button>
+                      {medications.length > 0 && (
+                        <button
+                          onClick={() => handleCopyToOtherFrames(day.dayOfWeek, timeFrame)}
+                          className="text-xs px-2 sm:px-3 py-1 sm:py-1.5 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition shadow-sm font-medium"
+                          title="Copy to other time frames"
+                        >
+                          📋 Copy
+                        </button>
+                      )}
                     </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div className="flex gap-2">
-              <button
-                onClick={() => handleEditSchedule(servo.id)}
-                className="flex-1 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition"
-              >
-                Edit Schedule
-              </button>
-              <button
-                onClick={() => handleDispense(servo.id)}
-                disabled={!piConnected || !servo.medication || servo.medication.trim() === ''}
-                className="flex-1 px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600 transition disabled:bg-gray-300 disabled:cursor-not-allowed"
-              >
-                Dispense Now
-              </button>
+                    
+                    {medications.length > 0 ? (
+                      <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
+                        {/* Medication Names - Compact List */}
+                        <div className="p-2.5 sm:p-3 border-b border-gray-100">
+                          <div className="flex items-start gap-2 mb-2">
+                            <span className="text-xs text-gray-500 font-medium mt-0.5">Medications:</span>
+                            <div className="flex-1 flex flex-wrap gap-1.5 sm:gap-2">
+                              {medications.map((med, index) => (
+                                <div key={med.id} className="flex items-center gap-1.5 group">
+                                  <span className="text-sm sm:text-base font-medium text-gray-800">
+                                    {med.medication_name}
+                                    {index < medications.length - 1 && <span className="text-gray-400">,</span>}
+                                  </span>
+                                  <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <button
+                                      onClick={() => handleEditMedication(med, day.dayOfWeek, timeFrame)}
+                                      className="px-1 py-0.5 text-blue-500 hover:text-blue-700 hover:bg-blue-50 rounded text-xs"
+                                      title="Edit medication name"
+                                    >
+                                      ✏️
+                                    </button>
+                                    <button
+                                      onClick={() => handleRemoveMedication(med.id)}
+                                      className="px-1 py-0.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded text-xs"
+                                      title="Remove"
+                                    >
+                                      ✕
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          {/* Show time frame time - ONE time for entire frame */}
+                          <div className="flex items-center justify-between gap-2 text-xs pt-2">
+                            <div className="flex items-center gap-2 text-gray-600">
+                              <span>🕐</span>
+                              {day.timeFrameTimes[timeFrame] ? (
+                                <span className="font-medium text-gray-800">{day.timeFrameTimes[timeFrame]}</span>
+                              ) : (
+                                <span className="text-gray-400 italic">No time set</span>
+                              )}
+                            </div>
+                            {day.timeFrameTimes[timeFrame] ? (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleEditTimeFrameTime(day.dayOfWeek, timeFrame)
+                                }}
+                                className="text-blue-500 hover:text-blue-700 hover:bg-blue-50 px-2 py-1 rounded text-xs cursor-pointer z-10 relative"
+                                title="Edit time"
+                                type="button"
+                              >
+                                ✏️ Edit Time
+                              </button>
+                            ) : (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleEditTimeFrameTime(day.dayOfWeek, timeFrame)
+                                }}
+                                className="text-blue-500 hover:text-blue-700 hover:bg-blue-50 px-2 py-1 rounded text-xs cursor-pointer z-10 relative"
+                                title="Set time"
+                                type="button"
+                              >
+                                ⏰ Set Time
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        
+                        {/* Action Buttons - Compact */}
+                        <div className="p-2 sm:p-2.5 flex gap-2">
+                          <button
+                            onClick={() => handleDispense(day.dayOfWeek, timeFrame)}
+                            disabled={!piConnected}
+                            className="flex-1 px-3 py-2 bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-lg hover:from-green-600 hover:to-emerald-600 transition shadow-sm font-semibold disabled:bg-gray-300 disabled:cursor-not-allowed text-xs sm:text-sm"
+                            title={`Dispense all ${medications.length} medication(s) in ${frameInfo.label} bundle`}
+                          >
+                            ⚡ Dispense ({medications.length})
+                          </button>
+                          <button
+                            onClick={() => handleAddMedication(day.dayOfWeek, timeFrame)}
+                            className="px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition shadow-sm font-medium text-xs sm:text-sm"
+                            title="Add medication"
+                          >
+                            + Add
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="bg-white rounded-lg border border-gray-200 p-3 sm:p-4">
+                        <div className="text-center text-sm text-gray-400 italic mb-3">
+                          No medications added yet
+                        </div>
+                        <button
+                          onClick={() => handleAddMedication(day.dayOfWeek, timeFrame)}
+                          className="w-full px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition shadow-sm font-medium text-xs sm:text-sm"
+                        >
+                          + Add Medication
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
             </div>
+            
           </div>
         ))}
       </div>
 
-      {/* Edit Modal */}
-      {editingServo && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-full max-w-md">
-            <h3 className="text-2xl font-bold mb-4">Edit Schedule - Servo {editingServo}</h3>
-            
-            <div className="space-y-4">
+      {/* Add/Edit Medication Modal - Enhanced UI */}
+      {(addingMedication || editingMedication) && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 sm:p-6">
+          <div className="bg-white rounded-xl p-6 sm:p-8 w-full max-w-md shadow-2xl">
+            <div className="flex items-center gap-3 mb-6">
+              <span className="text-3xl">
+                {(addingMedication || editingMedication)?.timeFrame === 'morning' ? '🌅' : (addingMedication || editingMedication)?.timeFrame === 'afternoon' ? '☀️' : '🌙'}
+              </span>
               <div>
-                <label className="block text-sm font-medium mb-1">
+                <h3 className="text-xl sm:text-2xl font-bold text-gray-800">
+                  {editingMedication ? 'Edit Medication' : 'Add Medication'}
+                </h3>
+                <p className="text-sm text-gray-500">
+                  {days.find(d => d.dayOfWeek === (addingMedication || editingMedication)?.dayOfWeek)?.name || 'Day'} • {TIME_FRAMES[(addingMedication || editingMedication)?.timeFrame as keyof typeof TIME_FRAMES].label}
+                </p>
+              </div>
+            </div>
+            
+            <div className="space-y-5">
+              <div>
+                <label className="block text-sm font-semibold mb-2 text-gray-700">
                   Medication Name <span className="text-red-500">*</span>
                 </label>
                 <input
                   type="text"
-                  value={formData.medication_name}
-                  onChange={(e) => setFormData({ ...formData, medication_name: e.target.value })}
-                  className="w-full border rounded px-3 py-2"
-                  placeholder="e.g., Aspirin"
+                  value={newMedication.name}
+                  onChange={(e) => setNewMedication({ ...newMedication, name: e.target.value })}
+                  className="w-full border-2 border-gray-300 rounded-lg px-4 py-3 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition"
+                  placeholder="e.g., Aspirin, Vitamin D"
                   required
                 />
-                <p className="text-xs text-gray-500 mt-1">Required - Enter medication name to enable dispensing</p>
               </div>
 
-              <div className="border-t pt-4">
-                <h4 className="text-sm font-medium mb-3 text-gray-600">Schedule (Optional)</h4>
-                <p className="text-xs text-gray-500 mb-3">Leave empty to save medication name only. You can add a schedule later.</p>
-                
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-sm font-medium mb-1">Time</label>
-                    <input
-                      type="time"
-                      value={formData.time}
-                      onChange={(e) => setFormData({ ...formData, time: e.target.value })}
-                      className="w-full border rounded px-3 py-2"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium mb-1">Date</label>
-                    <input
-                      type="date"
-                      value={formData.date}
-                      onChange={(e) => setFormData({ ...formData, date: e.target.value })}
-                      className="w-full border rounded px-3 py-2"
-                    />
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={formData.is_daily}
-                      onChange={(e) => setFormData({ ...formData, is_daily: e.target.checked })}
-                      className="h-4 w-4"
-                    />
-                    <label className="text-sm">Daily (repeat at this time every day)</label>
-                  </div>
-                </div>
-              </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  Note: Time is set per time frame, not per medication. All medications in this time frame will dispense at the same time.
+                </p>
             </div>
 
-            <div className="flex gap-2 mt-6">
+            <div className="flex flex-col sm:flex-row gap-3 mt-8">
               <button
                 onClick={handleCloseModal}
-                className="flex-1 px-4 py-2 bg-gray-300 rounded hover:bg-gray-400"
+                className="flex-1 px-4 py-3 text-sm sm:text-base bg-gray-200 rounded-lg hover:bg-gray-300 transition font-medium"
               >
                 Cancel
               </button>
               <button
                 onClick={handleSaveMedication}
-                className="flex-1 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+                className="flex-1 px-4 py-3 text-sm sm:text-base bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-lg hover:from-blue-600 hover:to-blue-700 transition shadow-lg font-semibold"
               >
-                Save
+                {editingMedication ? '✅ Update Medication' : '✅ Add Medication'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Time Frame Time Modal */}
+      {editingTimeFrameTime && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 sm:p-6">
+          <div className="bg-white rounded-xl p-6 sm:p-8 w-full max-w-md shadow-2xl">
+            <div className="flex items-center gap-3 mb-6">
+              <span className="text-3xl">
+                {editingTimeFrameTime.timeFrame === 'morning' ? '🌅' : editingTimeFrameTime.timeFrame === 'afternoon' ? '☀️' : '🌙'}
+              </span>
+              <div>
+                <h3 className="text-xl sm:text-2xl font-bold text-gray-800">
+                  Set {TIME_FRAMES[editingTimeFrameTime.timeFrame as keyof typeof TIME_FRAMES].label} Time
+                </h3>
+                <p className="text-sm text-gray-500">
+                  {days.find(d => d.dayOfWeek === editingTimeFrameTime.dayOfWeek)?.name || 'Day'}
+                </p>
+              </div>
+            </div>
+            
+            <div className="space-y-5">
+              <div>
+                <label className="block text-sm font-semibold mb-2 text-gray-700">
+                  Time <span className="text-red-500">*</span>
+                  <span className="text-xs font-normal text-gray-500 ml-2">
+                    (Range: {TIME_FRAMES[editingTimeFrameTime.timeFrame as keyof typeof TIME_FRAMES].start} - {TIME_FRAMES[editingTimeFrameTime.timeFrame as keyof typeof TIME_FRAMES].end})
+                  </span>
+                </label>
+                <input
+                  type="time"
+                  value={timeFrameTime}
+                  onChange={(e) => setTimeFrameTime(e.target.value)}
+                  min={TIME_FRAMES[editingTimeFrameTime.timeFrame as keyof typeof TIME_FRAMES].start}
+                  max={TIME_FRAMES[editingTimeFrameTime.timeFrame as keyof typeof TIME_FRAMES].end}
+                  className="w-full border-2 border-gray-300 rounded-lg px-4 py-3 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition"
+                  required
+                />
+                <div className="mt-2 p-2.5 bg-blue-50 rounded-lg border border-blue-200">
+                  <p className="text-xs font-medium text-blue-800 flex items-center gap-1.5">
+                    <span>⏰</span>
+                    <span>Allowed time range: <span className="font-bold">{TIME_FRAMES[editingTimeFrameTime.timeFrame as keyof typeof TIME_FRAMES].start}</span> - <span className="font-bold">{TIME_FRAMES[editingTimeFrameTime.timeFrame as keyof typeof TIME_FRAMES].end}</span></span>
+                  </p>
+                  <p className="text-xs text-blue-700 mt-1">
+                    All medications in {TIME_FRAMES[editingTimeFrameTime.timeFrame as keyof typeof TIME_FRAMES].label} will dispense at this time.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-3 mt-8">
+              <button
+                onClick={handleCloseModal}
+                className="flex-1 px-4 py-3 text-sm sm:text-base bg-gray-200 rounded-lg hover:bg-gray-300 transition font-medium"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveTimeFrameTime}
+                className="flex-1 px-4 py-3 text-sm sm:text-base bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-lg hover:from-blue-600 hover:to-blue-700 transition shadow-lg font-semibold"
+              >
+                ✅ Set Time
               </button>
             </div>
           </div>
@@ -1177,4 +1721,5 @@ export default function Home() {
     </div>
   )
 }
+
 

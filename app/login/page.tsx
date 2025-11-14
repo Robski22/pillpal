@@ -50,6 +50,9 @@ export default function Login() {
         const { data, error } = await supabase.auth.signUp({
           email: email.trim().toLowerCase(),
           password: password,
+          options: {
+            emailRedirectTo: getRedirectUrl('/'), // Redirect to home page after email confirmation
+          }
         })
         
         if (error) {

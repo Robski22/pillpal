@@ -21,28 +21,55 @@ export default function ResetPasswordPage() {
         const accessToken = hashParams.get('access_token')
         const type = hashParams.get('type')
 
-        if (accessToken && type === 'recovery') {
-          // Exchange the access token for a session
-          const { data, error } = await supabase.auth.setSession({
-            access_token: accessToken,
-            refresh_token: hashParams.get('refresh_token') || '',
-          })
+        if (accessToken) {
+          // Check if this is a recovery (password reset) or signup confirmation
+          if (type === 'recovery') {
+            // Password reset link
+            const { data, error } = await supabase.auth.setSession({
+              access_token: accessToken,
+              refresh_token: hashParams.get('refresh_token') || '',
+            })
 
-          if (error) {
-            console.error('Error setting session:', error)
-            setMessage('Invalid or expired reset link. Please request a new one.')
-            setLoading(false)
+            if (error) {
+              console.error('Error setting session:', error)
+              setMessage('⚠️ Invalid or expired reset link.\n\nThe link may have expired (they expire after 1 hour) or already been used.\n\nPlease request a new password reset from the login page.')
+              setLoading(false)
+              return
+            }
+
+            // Clear the hash from URL
+            window.history.replaceState({}, '', '/reset-password')
+            setMessage('✅ Reset link verified! Please enter your new password below.')
+          } else if (type === 'signup') {
+            // This is a signup confirmation link, not a password reset!
+            // Redirect to home page after confirming email
+            const { data, error } = await supabase.auth.setSession({
+              access_token: accessToken,
+              refresh_token: hashParams.get('refresh_token') || '',
+            })
+
+            if (error) {
+              console.error('Error setting session:', error)
+              setMessage('⚠️ Invalid or expired confirmation link.\n\nPlease try signing up again or contact support.')
+              setLoading(false)
+              return
+            }
+
+            // Clear the hash and redirect to home
+            window.history.replaceState({}, '', '/')
+            router.push('/')
             return
           }
-
-          // Clear the hash from URL
-          window.history.replaceState({}, '', '/reset-password')
-          setMessage('Please enter your new password below.')
         } else {
           // Check if user is already authenticated (session exists)
           const { data: { session } } = await supabase.auth.getSession()
           if (!session) {
-            setMessage('No reset link found. Please request a password reset from the login page.')
+            setMessage('⚠️ Auth session missing!\n\nThis could mean:\n1. The reset link has expired (links expire after 1 hour)\n2. You clicked a signup confirmation link instead of a password reset link\n3. The link was already used\n\nPlease request a new password reset from the login page.')
+            setLoading(false)
+            return
+          } else {
+            // User has a session, they can reset password
+            setMessage('Please enter your new password below.')
           }
         }
       } catch (error: any) {
@@ -98,12 +125,12 @@ export default function ResetPasswordPage() {
       <div className="bg-white p-6 rounded shadow w-full max-w-md">
         <h1 className="text-2xl font-bold mb-4">Reset Password</h1>
         {message && (
-          <div className={`mb-3 text-sm p-3 rounded ${
+          <div className={`mb-3 text-sm p-3 rounded whitespace-pre-line ${
             message.includes('✅') || message.includes('Please enter')
-              ? 'bg-green-50 text-green-700'
-              : message.includes('Error') || message.includes('Invalid') || message.includes('No reset')
-              ? 'bg-red-50 text-red-700'
-              : 'bg-yellow-50 text-yellow-700'
+              ? 'bg-green-50 text-green-700 border border-green-200'
+              : message.includes('Error') || message.includes('Invalid') || message.includes('No reset') || message.includes('⚠️')
+              ? 'bg-red-50 text-red-700 border border-red-200'
+              : 'bg-yellow-50 text-yellow-700 border border-yellow-200'
           }`}>
             {message}
           </div>

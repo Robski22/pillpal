@@ -820,6 +820,10 @@ export default function Home() {
       return
     }
 
+    // Declare variables outside try block so they're accessible in catch block
+    let targetTimeFrame: 'morning' | 'afternoon' | 'evening' | null = timeFrame || null
+    let frameMedications: Medication[] = []
+
     try {
       const day = days.find(d => d.dayOfWeek === dayOfWeek)
       if (!day) return
@@ -831,7 +835,7 @@ export default function Home() {
       const currentTimeStr = `${String(currentHour).padStart(2, '0')}:${String(currentMinute).padStart(2, '0')}`
       
       // If timeFrame provided, dispense that bundle; otherwise find next available bundle
-      let targetTimeFrame: 'morning' | 'afternoon' | 'evening' | null = timeFrame || null
+      targetTimeFrame = timeFrame || null
       let isEarlyDispense = false
       
       // Check if this time frame was already dispensed (ONCE PER TIME FRAME LIMIT)
@@ -880,6 +884,10 @@ export default function Home() {
       
       // Check if we're trying to dispense a time frame that hasn't started yet
       // Allow early dispense 30 minutes before the time frame starts
+      if (!targetTimeFrame) {
+        alert('No time frame selected. Please select a time frame to dispense.')
+        return
+      }
       const frameInfo = TIME_FRAMES[targetTimeFrame]
       const [startHour, startMin] = frameInfo.start.split(':').map(Number)
       const startMinutes = startHour * 60 + startMin
@@ -944,7 +952,7 @@ export default function Home() {
       }
       
       // Get all medications in the target time frame (bundle)
-      const frameMedications = day.medications[targetTimeFrame] || []
+      frameMedications = day.medications[targetTimeFrame] || []
       
       if (frameMedications.length === 0) {
         alert(`No medications in ${TIME_FRAMES[targetTimeFrame].label} to dispense!`)
@@ -969,7 +977,7 @@ export default function Home() {
           // Update last dispensed time and mark this time frame as dispensed
           setDays(prevDays => 
             prevDays.map(d => {
-              if (d.dayOfWeek === dayOfWeek) {
+              if (d.dayOfWeek === dayOfWeek && targetTimeFrame) {
                 const updatedDispensedFrames = [...(d.dispensedTimeFrames || []), targetTimeFrame]
                 return { 
                   ...d, 
@@ -1018,7 +1026,7 @@ export default function Home() {
       // Log manual dispense error
       try {
         const { data: { session } } = await supabase.auth.getSession()
-        if (session?.user && frameMedications) {
+        if (session?.user && frameMedications.length > 0) {
           for (const med of frameMedications) {
             await supabase.from('dispense_history').insert({
               user_id: session.user.id,
@@ -1222,8 +1230,8 @@ export default function Home() {
 
         await fetchDayData()
         setEditingMedication(null)
-        setNewMedication({ name: '', time: '' })
-        alert(`✅ ${newMedication.name} updated in ${dayName} ${TIME_FRAMES[timeFrame].label}!`)
+        setNewMedication({ name: '' })
+        alert(`✅ ${newMedication.name} updated in ${dayName} ${TIME_FRAMES[timeFrame as keyof typeof TIME_FRAMES].label}!`)
       } else {
         // Get or create day_config for new medication
         const { data: existingConfig } = await supabase
@@ -1271,8 +1279,8 @@ export default function Home() {
 
         await fetchDayData()
         setAddingMedication(null)
-        setNewMedication({ name: '', time: '' })
-        alert(`✅ ${newMedication.name} added to ${dayName} ${TIME_FRAMES[timeFrame].label}!`)
+        setNewMedication({ name: '' })
+        alert(`✅ ${newMedication.name} added to ${dayName} ${TIME_FRAMES[timeFrame as keyof typeof TIME_FRAMES].label}!`)
       }
     } catch (error: any) {
       console.error('Error saving medication:', error)

@@ -32,14 +32,14 @@ export default function ResetPasswordPage() {
 
             if (error) {
               console.error('Error setting session:', error)
-              setMessage('⚠️ Invalid or expired reset link.\n\nThe link may have expired (they expire after 1 hour) or already been used.\n\nPlease request a new password reset from the login page.')
+              setMessage(' Invalid or expired reset link.\n\nThe link may have expired (they expire after 1 hour) or already been used.\n\nPlease request a new password reset from the login page.')
               setLoading(false)
               return
             }
 
             // Clear the hash from URL
             window.history.replaceState({}, '', '/reset-password')
-            setMessage('✅ Reset link verified! Please enter your new password below.')
+            setMessage(' Reset link verified! Please enter your new password below.')
           } else if (type === 'signup') {
             // This is a signup confirmation link, not a password reset!
             // Redirect to home page after confirming email
@@ -50,7 +50,7 @@ export default function ResetPasswordPage() {
 
             if (error) {
               console.error('Error setting session:', error)
-              setMessage('⚠️ Invalid or expired confirmation link.\n\nPlease try signing up again or contact support.')
+              setMessage(' Invalid or expired confirmation link.\n\nPlease try signing up again or contact support.')
               setLoading(false)
               return
             }
@@ -64,7 +64,7 @@ export default function ResetPasswordPage() {
           // Check if user is already authenticated (session exists)
           const { data: { session } } = await supabase.auth.getSession()
           if (!session) {
-            setMessage('⚠️ Auth session missing!\n\nThis could mean:\n1. The reset link has expired (links expire after 1 hour)\n2. You clicked a signup confirmation link instead of a password reset link\n3. The link was already used\n\nPlease request a new password reset from the login page.')
+            setMessage(' Auth session missing!\n\nThis could mean:\n1. The reset link has expired (links expire after 1 hour)\n2. You clicked a signup confirmation link instead of a password reset link\n3. The link was already used\n\nPlease request a new password reset from the login page.')
             setLoading(false)
             return
           } else {
@@ -97,7 +97,7 @@ export default function ResetPasswordPage() {
       setUpdating(true)
       const { error } = await supabase.auth.updateUser({ password })
       if (error) throw error
-      setMessage('✅ Password updated successfully! Redirecting to login...')
+      setMessage(' Password updated successfully! Redirecting to login...')
       // Redirect to login after 2 seconds
       setTimeout(() => {
         router.push('/login')

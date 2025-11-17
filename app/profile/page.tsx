@@ -134,11 +134,11 @@ export default function Profile() {
       
       if (sessionError) {
         if (sessionError.message?.includes('JWT') || sessionError.message?.includes('expired')) {
-          console.log('🔄 JWT expired, attempting to refresh session...')
+          console.log(' JWT expired, attempting to refresh session...')
           if (session) {
             const { data: { session: refreshedSession }, error: refreshError } = await supabase.auth.refreshSession(session)
             if (refreshError || !refreshedSession) {
-              console.error('❌ Failed to refresh session:', refreshError)
+              console.error(' Failed to refresh session:', refreshError)
               alert('Your session has expired. Please log in again.')
               router.push('/login')
               return null
@@ -155,7 +155,7 @@ export default function Profile() {
       }
       
       if (!session?.user) {
-        console.error('❌ No user session')
+        console.error(' No user session')
         alert('Not logged in. Please log in again.')
         router.push('/login')
         return null
@@ -163,7 +163,7 @@ export default function Profile() {
       
       return session
     } catch (error: any) {
-      console.error('❌ Session error:', error)
+      console.error(' Session error:', error)
       if (error?.message?.includes('JWT') || error?.message?.includes('expired')) {
         try {
           const { data: { session: currentSession } } = await supabase.auth.getSession()
@@ -217,7 +217,7 @@ export default function Profile() {
       // Handle JWT expiration
       if (memberError) {
         if (memberError.message?.includes('JWT') || memberError.message?.includes('expired')) {
-          console.log('🔄 JWT expired in resolveOwner, refreshing...')
+          console.log(' JWT expired in resolveOwner, refreshing...')
           const refreshedSession = await refreshSessionIfNeeded()
           if (!refreshedSession) return
           
@@ -315,7 +315,7 @@ export default function Profile() {
       return
     }
 
-    console.log('🔍 Fetching caregivers for owner:', ownerUserId)
+    console.log(' Fetching caregivers for owner:', ownerUserId)
 
     try {
       // Refresh session first to avoid JWT expiration
@@ -341,7 +341,7 @@ export default function Profile() {
       // Handle JWT expiration
       if (error) {
         if (error.message?.includes('JWT') || error.message?.includes('expired') || error.code === 'PGRST301') {
-          console.log('🔄 JWT expired in fetchCaregivers, refreshing...')
+          console.log(' JWT expired in fetchCaregivers, refreshing...')
           const refreshedSession = await refreshSessionIfNeeded()
           if (!refreshedSession) {
             setCaregivers([])
@@ -363,22 +363,22 @@ export default function Profile() {
           
           if (retryResult.error) {
             if (retryResult.error.code === '42P01' || retryResult.error.message?.includes('does not exist')) {
-              console.log('⚠️ Caregiver tables not set up yet.')
+              console.log(' Caregiver tables not set up yet.')
               setCaregivers([])
               return
             }
-            console.error('❌ Error fetching caregivers after refresh:', retryResult.error)
+            console.error(' Error fetching caregivers after refresh:', retryResult.error)
             setCaregivers([])
             return
           }
           
           data = retryResult.data
         } else if (error.code === '42P01' || error.message?.includes('does not exist')) {
-          console.log('⚠️ Caregiver tables not set up yet.')
+          console.log(' Caregiver tables not set up yet.')
           setCaregivers([])
           return
         } else {
-          console.error('❌ Error fetching caregivers:', error)
+          console.error(' Error fetching caregivers:', error)
           setCaregivers([])
           return
         }
@@ -410,19 +410,19 @@ export default function Profile() {
           })
         )
         
-        console.log('✅ Found caregivers:', caregiversWithEmail.length)
+        console.log(' Found caregivers:', caregiversWithEmail.length)
         if (caregiversWithEmail.length > 0) {
           console.log('Caregiver data:', JSON.stringify(caregiversWithEmail, null, 2))
         }
         setCaregivers(caregiversWithEmail)
       } else {
-        console.log('✅ No caregivers found')
+        console.log(' No caregivers found')
         setCaregivers([])
       }
     } catch (error: any) {
-      console.error('❌ Exception fetching caregivers:', error)
+      console.error(' Exception fetching caregivers:', error)
       if (error?.code === '42P01' || error?.message?.includes('does not exist')) {
-        console.log('⚠️ Caregiver tables not set up yet.')
+        console.log(' Caregiver tables not set up yet.')
         setCaregivers([])
       } else {
         console.error('Error details:', {
@@ -444,7 +444,7 @@ export default function Profile() {
     // LIMIT: Only ONE accepted caregiver allowed per account
     const acceptedCaregivers = caregivers.filter(c => c.status === 'accepted')
     if (acceptedCaregivers.length >= 1) {
-      alert('❌ You can only have ONE accepted caregiver per account.\n\nPlease remove the existing caregiver first before adding a new one.')
+      alert(' You can only have ONE accepted caregiver per account.\n\nPlease remove the existing caregiver first before adding a new one.')
       return
     }
 
@@ -470,7 +470,7 @@ export default function Profile() {
       if (profileDataFromProfiles) {
         userId = profileDataFromProfiles.id
         profileData = { id: userId }
-        console.log('✅ Found user in user_profiles:', userId)
+        console.log(' Found user in user_profiles:', userId)
       } else {
         // User not found in profiles - try to find/create using database function
         console.log('User not in user_profiles, trying to find/create via database function...')
@@ -498,10 +498,10 @@ export default function Profile() {
           if (functionResult && functionResult.length > 0) {
             userId = functionResult[0].user_id
             profileData = { id: userId }
-            console.log('✅ Found/created user profile via function:', userId)
+            console.log(' Found/created user profile via function:', userId)
             
             if (functionResult[0].created) {
-              console.log('🆕 Created new profile entry for existing user')
+              console.log(' Created new profile entry for existing user')
             }
           } else {
             // User doesn't exist in auth.users at all
@@ -576,7 +576,7 @@ export default function Profile() {
               .from('account_members')
               .delete()
               .eq('id', existingForThisOwner.id)
-            console.log('🔄 Removed rejected/invalid relationship to allow new invitation')
+            console.log(' Removed rejected/invalid relationship to allow new invitation')
           } else {
             alert('This user is already a caregiver for your account! Please refresh the page to see the current status.')
             setCaregiverEmail('')
@@ -605,11 +605,11 @@ export default function Profile() {
           
           if (deleteError) {
             console.error('Error removing existing relationships:', deleteError)
-            alert('❌ Error removing existing caregiver relationships. Please try again.')
+            alert(' Error removing existing caregiver relationships. Please try again.')
             return
           }
           
-          console.log(`🔄 Removed ${activeRelationships.length} existing caregiver relationship(s)`)
+          console.log(` Removed ${activeRelationships.length} existing caregiver relationship(s)`)
         }
       }
 
@@ -630,14 +630,14 @@ export default function Profile() {
             .eq('status', 'accepted')
           
           if (acceptedCount && acceptedCount >= 1) {
-            alert('❌ You already have an accepted caregiver. Please refresh and remove the existing one first.')
+            alert(' You already have an accepted caregiver. Please refresh and remove the existing one first.')
             await fetchCaregivers()
             return
           }
         } catch (statusError: any) {
           // Status column doesn't exist, use total count
           if (currentCount !== null && currentCount >= 1) {
-            alert('❌ You already have a caregiver. Please refresh and remove the existing one first.')
+            alert(' You already have a caregiver. Please refresh and remove the existing one first.')
             await fetchCaregivers()
             return
           }
@@ -654,13 +654,13 @@ export default function Profile() {
 
       if (finalCheck && finalCheck > 0) {
         // Relationship exists - delete it and allow re-adding
-        console.log('⚠️ Relationship exists but may be invalid, deleting and re-adding...')
+        console.log(' Relationship exists but may be invalid, deleting and re-adding...')
         await supabase
           .from('account_members')
           .delete()
           .eq('owner_user_id', ownerUserId)
           .eq('member_user_id', profileData.id)
-        console.log('🔄 Removed existing relationship to allow fresh addition')
+        console.log(' Removed existing relationship to allow fresh addition')
       }
 
       const { error } = await supabase
@@ -675,20 +675,20 @@ export default function Profile() {
       if (error) {
         // Check if error is due to unique constraint violation
         if (error.code === '23505' || error.message?.includes('duplicate') || error.message?.includes('unique')) {
-          alert('⚠️ This caregiver relationship already exists. Refreshing...')
+          alert(' This caregiver relationship already exists. Refreshing...')
           await fetchCaregivers()
           return
         }
         throw error
       }
 
-      alert(`✅ Caregiver invitation sent!\n\n${caregiverEmail.trim()} will receive the invitation and must accept it before they can access your PillPal system.`)
+      alert(` Caregiver invitation sent!\n\n${caregiverEmail.trim()} will receive the invitation and must accept it before they can access your PillPal system.`)
       setCaregiverEmail('')
       setShowCaregiverForm(false)
       await fetchCaregivers()
     } catch (error: any) {
       console.error('Error inviting caregiver:', error)
-      alert(`❌ Error: ${error.message || 'Failed to add caregiver'}`)
+      alert(` Error: ${error.message || 'Failed to add caregiver'}`)
     }
   }
 
@@ -706,7 +706,7 @@ export default function Profile() {
         return
       }
 
-      console.log('🔄 Fetching pending invitations for user:', session.user.id)
+      console.log(' Fetching pending invitations for user:', session.user.id)
 
       // Fetch pending invitations for this user (caregiver)
       const { data, error } = await supabase
@@ -725,7 +725,7 @@ export default function Profile() {
         console.error('❌ Error fetching pending invitations:', error)
         // If status column doesn't exist, return empty array
         if (error.message?.includes('column') || error.message?.includes('status')) {
-          console.log('⚠️ Status column may not exist, returning empty invitations')
+          console.log(' Status column may not exist, returning empty invitations')
           setPendingInvitations([])
           return
         }
@@ -759,14 +759,14 @@ export default function Profile() {
             }
           })
         )
-        console.log('✅ Set pending invitations:', invitationsWithEmail.length)
+        console.log(' Set pending invitations:', invitationsWithEmail.length)
         setPendingInvitations(invitationsWithEmail)
       } else {
-        console.log('✅ No pending invitations found')
+        console.log(' No pending invitations found')
         setPendingInvitations([])
       }
     } catch (error: any) {
-      console.error('❌ Exception fetching pending invitations:', error)
+      console.error(' Exception fetching pending invitations:', error)
       setPendingInvitations([])
     }
   }
@@ -784,10 +784,10 @@ export default function Profile() {
       if (!session) return
 
       const currentUserId = session.user.id
-      console.log('🔄 Starting acceptance process for invitation:', invitationId, 'user:', currentUserId)
+      console.log(' Starting acceptance process for invitation:', invitationId, 'user:', currentUserId)
 
       // STEP 1: Verify the invitation exists and is pending
-      console.log('📋 Step 1: Verifying invitation exists and is pending...')
+      console.log(' Step 1: Verifying invitation exists and is pending...')
       const { data: invitationData, error: verifyError } = await supabase
         .from('account_members')
         .select('id, owner_user_id, member_user_id, status')
@@ -796,20 +796,20 @@ export default function Profile() {
         .maybeSingle()
 
       if (verifyError) {
-        console.error('❌ Error verifying invitation:', verifyError)
+        console.error(' Error verifying invitation:', verifyError)
         throw new Error(`Failed to verify invitation: ${verifyError.message}`)
       }
 
       if (!invitationData) {
-        console.error('❌ Invitation not found or access denied')
-        alert('❌ Error: Invitation not found. It may have already been accepted, rejected, or removed.')
+        console.error(' Invitation not found or access denied')
+        alert(' Error: Invitation not found. It may have already been accepted, rejected, or removed.')
         await fetchPendingInvitations()
         return
       }
 
       if (invitationData.status !== 'pending') {
-        console.error('❌ Invitation already processed:', invitationData.status)
-        alert(`❌ Error: This invitation has already been ${invitationData.status}. Please refresh the page.`)
+        console.error(' Invitation already processed:', invitationData.status)
+        alert(` Error: This invitation has already been ${invitationData.status}. Please refresh the page.`)
         await fetchPendingInvitations()
         return
       }
@@ -817,7 +817,7 @@ export default function Profile() {
       console.log('✅ Invitation verified - owner:', invitationData.owner_user_id, 'status:', invitationData.status)
 
       // STEP 2: VALIDATION: Check if this user is already an owner who has caregivers
-      console.log('📋 Step 2: Checking if user has caregivers...')
+      console.log(' Step 2: Checking if user has caregivers...')
       const { data: existingCaregivers, error: checkError } = await supabase
         .from('account_members')
         .select('id, member_user_id')
@@ -829,12 +829,12 @@ export default function Profile() {
         // Continue anyway - might be a temporary error
       } else if (existingCaregivers && existingCaregivers.length > 0) {
         // User already has caregivers - they cannot accept invitations
-        alert(`❌ Cannot accept invitation!\n\nYou already have ${existingCaregivers.length} caregiver(s) in your account.\n\nAn account with caregivers cannot also be a caregiver for another account.\n\nPlease remove your caregivers first if you want to accept this invitation.`)
+        alert(` Cannot accept invitation!\n\nYou already have ${existingCaregivers.length} caregiver(s) in your account.\n\nAn account with caregivers cannot also be a caregiver for another account.\n\nPlease remove your caregivers first if you want to accept this invitation.`)
         return
       }
 
       // STEP 3: VALIDATION: Check if this user is already a caregiver for someone else
-      console.log('📋 Step 3: Checking if user is already a caregiver...')
+      console.log(' Step 3: Checking if user is already a caregiver...')
       const { data: existingCaregiverRole, error: caregiverCheckError } = await supabase
         .from('account_members')
         .select('owner_user_id, status')
@@ -848,12 +848,12 @@ export default function Profile() {
         // Continue anyway - might be a temporary error
       } else if (existingCaregiverRole && existingCaregiverRole.status === 'accepted') {
         // User is already an accepted caregiver for someone else
-        alert(`❌ Cannot accept invitation!\n\nYou are already a caregiver for another account.\n\nAn account can only be a caregiver for ONE owner at a time.\n\nPlease contact the current owner to remove you first if you want to accept this invitation.`)
+        alert(` Cannot accept invitation!\n\nYou are already a caregiver for another account.\n\nAn account can only be a caregiver for ONE owner at a time.\n\nPlease contact the current owner to remove you first if you want to accept this invitation.`)
         return
       }
 
       // STEP 4: Update status to 'accepted'
-      console.log('📋 Step 4: Updating invitation status to accepted...')
+      console.log(' Step 4: Updating invitation status to accepted...')
       const { data: updateData, error: updateError } = await supabase
         .from('account_members')
         .update({ status: 'accepted' })
@@ -863,7 +863,7 @@ export default function Profile() {
         .select('id, owner_user_id, status') // Return the updated row to verify
 
       if (updateError) {
-        console.error('❌ Error updating status:', updateError)
+        console.error(' Error updating status:', updateError)
         
         // More specific error messages
         if (updateError.code === '42501' || updateError.message?.includes('permission') || updateError.message?.includes('policy')) {
@@ -875,7 +875,7 @@ export default function Profile() {
 
       // Check if update actually affected a row
       if (!updateData || updateData.length === 0) {
-        console.error('❌ No rows updated - invitation may have been accepted/removed by another process')
+        console.error(' No rows updated - invitation may have been accepted/removed by another process')
         
         // Double-check the current status
         const { data: currentStatus } = await supabase
@@ -885,11 +885,11 @@ export default function Profile() {
           .single()
         
         if (currentStatus?.status === 'accepted') {
-          console.log('✅ Invitation was already accepted (possibly by another tab/session)')
-          alert('✅ This invitation has already been accepted. Refreshing...')
+          console.log(' Invitation was already accepted (possibly by another tab/session)')
+          alert(' This invitation has already been accepted. Refreshing...')
         } else {
-          console.error('❌ Invitation status is:', currentStatus?.status)
-          alert('❌ Error: Could not update invitation. It may have already been accepted, rejected, or removed. Please refresh the page.')
+          console.error(' Invitation status is:', currentStatus?.status)
+          alert(' Error: Could not update invitation. It may have already been accepted, rejected, or removed. Please refresh the page.')
         }
         
         await fetchPendingInvitations()
@@ -898,14 +898,14 @@ export default function Profile() {
       }
 
       const updatedRow = updateData[0]
-      console.log('✅ Status updated successfully:', updatedRow)
+      console.log(' Status updated successfully:', updatedRow)
       
       // STEP 5: Small delay to ensure database sync
-      console.log('📋 Step 5: Waiting for database sync...')
+      console.log(' Step 5: Waiting for database sync...')
       await new Promise(resolve => setTimeout(resolve, 500))
       
       // STEP 6: Verify the update was successful
-      console.log('📋 Step 6: Verifying update...')
+      console.log(' Step 6: Verifying update...')
       const { data: verifyUpdate } = await supabase
         .from('account_members')
         .select('status')
@@ -913,25 +913,25 @@ export default function Profile() {
         .single()
       
       if (verifyUpdate?.status !== 'accepted') {
-        console.error('❌ Verification failed - status is:', verifyUpdate?.status)
-        alert('❌ Error: Invitation update could not be verified. Please refresh the page and try again.')
+        console.error(' Verification failed - status is:', verifyUpdate?.status)
+        alert(' Error: Invitation update could not be verified. Please refresh the page and try again.')
         await fetchPendingInvitations()
         return
       }
       
-      console.log('✅ Update verified - status is now:', verifyUpdate.status)
+      console.log(' Update verified - status is now:', verifyUpdate.status)
       
       // STEP 7: Resolve owner status to sync state
-      console.log('📋 Step 7: Resolving owner status after acceptance...')
+      console.log(' Step 7: Resolving owner status after acceptance...')
       await resolveOwner()
       
       // STEP 8: Refresh pending invitations to remove the accepted one
-      console.log('📋 Step 8: Refreshing pending invitations...')
+      console.log(' Step 8: Refreshing pending invitations...')
       await fetchPendingInvitations()
       
-      console.log('✅ Acceptance successful! owner_user_id:', updatedRow.owner_user_id)
+      console.log(' Acceptance successful! owner_user_id:', updatedRow.owner_user_id)
       
-      alert(`✅ Invitation accepted! You can now access ${ownerEmail}'s PillPal system.\n\nRedirecting to dashboard...`)
+      alert(` Invitation accepted! You can now access ${ownerEmail}'s PillPal system.\n\nRedirecting to dashboard...`)
       
       // Force a hard refresh to ensure state is synced (using window.location)
       // This ensures the page.tsx resolveOwner runs with fresh data
@@ -939,8 +939,8 @@ export default function Profile() {
         window.location.href = '/'
       }, 500)
     } catch (error: any) {
-      console.error('❌ Error accepting invitation:', error)
-      alert(`❌ Error: ${error.message || 'Failed to accept invitation'}\n\nPlease check the browser console for details and try refreshing the page.`)
+      console.error(' Error accepting invitation:', error)
+      alert(` Error: ${error.message || 'Failed to accept invitation'}\n\nPlease check the browser console for details and try refreshing the page.`)
     }
   }
 
@@ -965,13 +965,13 @@ export default function Profile() {
 
       if (error) throw error
 
-      alert(`✅ Invitation rejected.`)
+      alert(` Invitation rejected.`)
       
       // Refresh pending invitations
       await fetchPendingInvitations()
     } catch (error: any) {
       console.error('Error rejecting invitation:', error)
-      alert(`❌ Error: ${error.message || 'Failed to reject invitation'}`)
+      alert(` Error: ${error.message || 'Failed to reject invitation'}`)
     }
   }
 
@@ -996,11 +996,11 @@ export default function Profile() {
 
       if (error) throw error
 
-      alert(`✅ Caregiver removed successfully!\n\n${caregiverEmail} will lose access immediately. They may need to refresh their browser or log out and log back in.`)
+      alert(` Caregiver removed successfully!\n\n${caregiverEmail} will lose access immediately. They may need to refresh their browser or log out and log back in.`)
       await fetchCaregivers()
     } catch (error: any) {
       console.error('Error removing caregiver:', error)
-      alert(`❌ Error: ${error.message || 'Failed to remove caregiver'}`)
+      alert(` Error: ${error.message || 'Failed to remove caregiver'}`)
     }
   }
 
@@ -1214,7 +1214,7 @@ export default function Profile() {
                     className="px-3 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-colors text-sm"
                     title="Refresh caregivers list"
                   >
-                    🔄 Refresh
+                     Refresh
                   </button>
                   <button
                     onClick={() => setShowCaregiverForm(!showCaregiverForm)}
@@ -1258,7 +1258,7 @@ export default function Profile() {
             {showCaregiverForm && acceptedCaregivers.length >= 1 && (
               <div className="mb-6 p-4 bg-orange-50 rounded-lg border border-orange-200">
                 <p className="text-sm text-orange-800">
-                  ⚠️ <strong>Maximum limit reached:</strong> You already have 1 accepted caregiver. Please remove the existing caregiver before adding a new one.
+                   <strong>Maximum limit reached:</strong> You already have 1 accepted caregiver. Please remove the existing caregiver before adding a new one.
                 </p>
               </div>
             )}

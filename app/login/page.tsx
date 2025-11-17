@@ -62,7 +62,7 @@ export default function Login() {
           if (error.message?.toLowerCase().includes('already') || 
               error.message?.toLowerCase().includes('registered') ||
               error.message?.toLowerCase().includes('exists')) {
-            alert('⚠️ This email already has an account!\n\nClick "Already have an account? Sign In" below.')
+            alert(' This email already has an account!\n\nClick "Already have an account? Sign In" below.')
             setIsSignUp(false)
             setEmail(email)
             setError(null)
@@ -80,14 +80,14 @@ export default function Login() {
               // Need email confirmation
               setShowResend(true)
               setResendCooldown(60)
-              alert('✅ Account created! Check your email for confirmation.\n\nIf you don\'t see it, wait 60 seconds and click "Resend confirmation email" below.')
+              alert(' Account created! Check your email for confirmation.\n\nIf you don\'t see it, wait 60 seconds and "Resend confirmation email" .')
               return
             }
           }
           
           // Real error - show it
           setError(error.message || 'Signup failed')
-          alert(`❌ Signup failed: ${error.message || 'Unknown error'}\n\nPlease try again.`)
+          alert(` Signup failed: ${error.message || 'Unknown error'}\n\nPlease try again.`)
           return
         }
         
@@ -100,11 +100,11 @@ export default function Login() {
             // Need email confirmation
             setShowResend(true)
             setResendCooldown(60)
-            alert(' Account created! Check your email for the confirmation link.\n\nIf you don\'t receive it, wait 60 seconds then click "Resend confirmation email" below.')
+            alert(' Account created! Check your email for the confirmation link.\n\nIf you don\'t receive it, wait 60 seconds then "Resend confirmation email."')
           }
         } else {
           setError('Account creation failed')
-          alert('❌ Account was not created. Please try again.')
+          alert(' Account was not created. Please try again.')
         }
       } else {
         // Sign in
@@ -227,22 +227,22 @@ export default function Login() {
                             signUpError.message?.includes('User already registered')) {
                           // User exists, email should be resent - set cooldown
                           setResendCooldown(60)
-                          alert('✅ Confirmation email resent! Check your inbox.\n\nNote: Supabase limits how often emails can be sent. If you don\'t receive it, wait 60 seconds and try again.')
+                          alert(' Confirmation email resent! Check your inbox.\n\nNote: Supabase limits how often emails can be sent. If you don\'t receive it, wait 60 seconds and try again.')
                         } else {
                           throw signUpError
                         }
                       } else {
                         setResendCooldown(60)
-                        alert('✅   Confirmation email sent! Check your inbox.')
+                        alert('  Confirmation email sent! Check your inbox.')
                       }
                     } else {
                       // Resend worked
                       setResendCooldown(60)
-                      alert('✅ Confirmation email resent! Check your inbox.')
+                      alert(' Confirmation email resent! Check your inbox.')
                     }
                   } catch (e: any) {
                     if (e.message?.includes('rate limit') || e.message?.includes('too many requests')) {
-                      alert(`⏱️ Too many requests. Please wait 60 seconds before trying again.\n\nSupabase limits how often confirmation emails can be sent.`)
+                      alert(` Too many requests. Please wait 60 seconds before trying again.\n\nSupabase limits how often confirmation emails can be sent.`)
                       setResendCooldown(60)
                     } else {
                       alert(e.message || 'Failed to resend confirmation email. Please wait 60 seconds and try again.')

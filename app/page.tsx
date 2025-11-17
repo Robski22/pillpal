@@ -459,7 +459,7 @@ export default function Home() {
         
         // If relationship no longer exists, refresh to reset to owner mode
         if (!memberData && isMounted) {
-          console.log('🔄 Caregiver relationship removed, refreshing...')
+          console.log(' Caregiver relationship removed, refreshing...')
           await resolveOwner()
           if (isMounted) {
             await fetchDayData()
@@ -1689,7 +1689,7 @@ export default function Home() {
                                 title="Set time"
                                 type="button"
                               >
-                                ⏰ Set Time
+                                 Set Time
                               </button>
                             )}
                           </div>
@@ -1703,7 +1703,7 @@ export default function Home() {
                             className="flex-1 px-3 py-2 bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-lg hover:from-green-600 hover:to-emerald-600 transition shadow-sm font-semibold disabled:bg-gray-300 disabled:cursor-not-allowed text-xs sm:text-sm"
                             title={`Dispense all ${medications.length} medication(s) in ${frameInfo.label} bundle`}
                           >
-                            ⚡ Dispense ({medications.length})
+                             Dispense ({medications.length})
                           </button>
                           <button
                             onClick={() => handleAddMedication(day.dayOfWeek, timeFrame)}

@@ -21,7 +21,7 @@ async function getWebSocketUrl(): Promise<string> {
 export async function connectToPi(): Promise<void> {
   return new Promise(async (resolve, reject) => {
     if (ws?.readyState === WebSocket.OPEN) {
-      console.log('✅ Already connected to Pi')
+      console.log(' Already connected to Pi')
       resolve()
       return
     }
@@ -35,23 +35,23 @@ export async function connectToPi(): Promise<void> {
     reconnectAttempts = 0
 
     ws.onopen = () => {
-      console.log('✅ Connected to Pi!')
+      console.log(' Connected to Pi!')
       connected = true
       resolve()
     }
 
     ws.onerror = (error) => {
-      console.error('❌ WebSocket connection error')
+      console.error(' WebSocket connection error')
     }
 
     ws.onclose = () => {
-      console.log('⚠️ Disconnected')
+      console.log(' Disconnected')
       connected = false
       
       // Auto-reconnect
       if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
         reconnectAttempts++
-        console.log(`🔄 Reconnecting... (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`)
+        console.log(` Reconnecting... (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`)
         setTimeout(() => connectToPi(), 3000)
       }
     }
@@ -91,14 +91,14 @@ if (typeof window !== 'undefined') {
 export function dispenseToPi(servoId: string, medication: string): Promise<any> {
   return new Promise((resolve, reject) => {
     if (!ws || !connected) {
-      console.error('❌ Cannot dispense: Not connected to Pi!')
+      console.error(' Cannot dispense: Not connected to Pi!')
       console.error('   WebSocket state:', ws?.readyState, 'Connected:', connected)
       reject(new Error('Not connected to Pi!'))
       return
     }
 
     if (ws.readyState !== WebSocket.OPEN) {
-      console.error('❌ Cannot dispense: WebSocket not open!')
+      console.error(' Cannot dispense: WebSocket not open!')
       console.error('   WebSocket state:', ws.readyState)
       reject(new Error('WebSocket not open!'))
       return
@@ -114,7 +114,7 @@ export function dispenseToPi(servoId: string, medication: string): Promise<any> 
     ws.send(message)
     
     const timeout = setTimeout(() => {
-      console.error('❌ Dispense timeout - no response from Pi')
+      console.error(' Dispense timeout - no response from Pi')
       reject(new Error('Timeout - Pi did not respond'))
     }, 10000)
     
@@ -123,10 +123,10 @@ export function dispenseToPi(servoId: string, medication: string): Promise<any> 
       clearTimeout(timeout)
       try {
         const response = JSON.parse(event.data)
-        console.log('✅ Dispense response received:', response)
+        console.log(' Dispense response received:', response)
         resolve(response)
       } catch (error) {
-        console.error('❌ Error parsing response:', error)
+        console.error(' Error parsing response:', error)
         reject(error)
       }
       ws!.onmessage = originalHandler
@@ -137,13 +137,13 @@ export function dispenseToPi(servoId: string, medication: string): Promise<any> 
 export function sendSmsViaPi(phoneNumber: string | string[], message: string): Promise<any> {
   return new Promise((resolve, reject) => {
     if (!ws || !connected) {
-      console.error('❌ Cannot send SMS: Not connected to Pi!')
+      console.error(' Cannot send SMS: Not connected to Pi!')
       reject(new Error('Not connected to Pi!'))
       return
     }
 
     if (ws.readyState !== WebSocket.OPEN) {
-      console.error('❌ Cannot send SMS: WebSocket not open!')
+      console.error(' Cannot send SMS: WebSocket not open!')
       reject(new Error('WebSocket not open!'))
       return
     }
@@ -161,7 +161,7 @@ export function sendSmsViaPi(phoneNumber: string | string[], message: string): P
     ws.send(smsMessage)
     
     const timeout = setTimeout(() => {
-      console.error('❌ SMS timeout - no response from Pi')
+      console.error(' SMS timeout - no response from Pi')
       reject(new Error('Timeout - Pi did not respond'))
     }, 15000) // Longer timeout for SMS (15 seconds)
     
@@ -170,10 +170,10 @@ export function sendSmsViaPi(phoneNumber: string | string[], message: string): P
       clearTimeout(timeout)
       try {
         const response = JSON.parse(event.data)
-        console.log('✅ SMS response received:', response)
+        console.log(' SMS response received:', response)
         resolve(response)
       } catch (error) {
-        console.error('❌ Error parsing SMS response:', error)
+        console.error(' Error parsing SMS response:', error)
         reject(error)
       }
       ws!.onmessage = originalHandler

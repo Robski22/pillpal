@@ -100,7 +100,7 @@ export default function Login() {
             // Need email confirmation
             setShowResend(true)
             setResendCooldown(60)
-            alert('✅ Account created! Check your email for the confirmation link.\n\nIf you don\'t receive it, wait 60 seconds then click "Resend confirmation email" below.')
+            alert(' Account created! Check your email for the confirmation link.\n\nIf you don\'t receive it, wait 60 seconds then click "Resend confirmation email" below.')
           }
         } else {
           setError('Account creation failed')
@@ -233,7 +233,7 @@ export default function Login() {
                         }
                       } else {
                         setResendCooldown(60)
-                        alert('✅ Confirmation email sent! Check your inbox.')
+                        alert('✅   Confirmation email sent! Check your inbox.')
                       }
                     } else {
                       // Resend worked

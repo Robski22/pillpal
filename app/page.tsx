@@ -99,11 +99,11 @@ export default function Home() {
   useEffect(() => {
     connectToPi()
       .then(() => {
-        console.log('✅ Connected to Pi!')
+        console.log(' Connected to Pi!')
         setPiConnected(true)
       })
       .catch((error: any) => {
-        console.error('❌ Could not connect to Pi:', error)
+        console.error(' Could not connect to Pi:', error)
         setPiConnected(false)
       })
 
@@ -260,7 +260,7 @@ export default function Home() {
             // Dispense ALL medications in this time frame bundle
             // Servo spins once for the entire bundle
             const response = await dispenseToPi('servo1', medicationNames)
-            console.log('✅ Auto-dispense bundle response:', response)
+            console.log(' Auto-dispense bundle response:', response)
 
             // Log auto dispense success for each medication in bundle
             try {
@@ -321,9 +321,9 @@ export default function Home() {
                   const smsResult = await sendSmsViaPi(phoneNumbers, smsMessage)
                   
                   if (smsResult.success) {
-                    console.log(`✅ SMS notification sent via SIMCOM (auto-dispense) to ${phoneNumbers.length} recipient(s):`, smsResult)
+                    console.log(` SMS notification sent via SIMCOM (auto-dispense) to ${phoneNumbers.length} recipient(s):`, smsResult)
                   } else {
-                    console.warn('⚠️ SMS notification failed (auto-dispense):', smsResult)
+                    console.warn(' SMS notification failed (auto-dispense):', smsResult)
                   }
                 } else {
                   console.log('ℹ️ No phone numbers found in profile, skipping SMS notification')
@@ -336,7 +336,7 @@ export default function Home() {
               // Don't block the dispense if SMS fails
             }
           } else {
-            console.log('⚠️ Pi not connected - would dispense bundle:', medicationNames)
+            console.log(' Pi not connected - would dispense bundle:', medicationNames)
             // Log attempted auto dispense when Pi offline
             try {
               const { data: { session } } = await supabase.auth.getSession()
@@ -357,7 +357,7 @@ export default function Home() {
             }
           }
         } catch (error) {
-          console.error('❌ Auto-dispense bundle error:', error)
+          console.error(' Auto-dispense bundle error:', error)
           // Log auto dispense error
           try {
             const { data: { session } } = await supabase.auth.getSession()
@@ -488,7 +488,7 @@ export default function Home() {
             const { data: { session: refreshedSession }, error: refreshError } = await supabase.auth.refreshSession(session)
             
             if (refreshError || !refreshedSession) {
-              console.error('❌ Failed to refresh session:', refreshError)
+              console.error(' Failed to refresh session:', refreshError)
               alert('Your session has expired. Please log in again.')
               router.push('/login')
               return null
@@ -507,7 +507,7 @@ export default function Home() {
       }
       
       if (!session?.user) {
-        console.error('❌ No user session')
+        console.error(' No user session')
         alert('Not logged in. Please log in again.')
         router.push('/login')
         return null
@@ -529,7 +529,7 @@ export default function Home() {
       
       return session
     } catch (error: any) {
-      console.error('❌ Session error:', error)
+      console.error(' Session error:', error)
       // If error message contains JWT or expired, try to refresh
       if (error?.message?.includes('JWT') || error?.message?.includes('expired')) {
         try {
@@ -598,7 +598,7 @@ export default function Home() {
             // Fall through to assume owner
           } else if (retryResult.data && retryResult.data.status === 'accepted') {
             // User is an accepted caregiver
-            console.log('✅ User is an accepted caregiver, owner:', retryResult.data.owner_user_id)
+            console.log(' User is an accepted caregiver, owner:', retryResult.data.owner_user_id)
             const result = {
               ownerUserId: retryResult.data.owner_user_id,
               isOwner: false
@@ -608,7 +608,7 @@ export default function Home() {
             return result
           } else if (retryResult.data && retryResult.data.status !== 'accepted') {
             // User has a pending/rejected relationship - treat as owner
-            console.log('⚠️ User has pending caregiver invitation, but is owner for now:', currentUserId)
+            console.log(' User has pending caregiver invitation, but is owner for now:', currentUserId)
             const result = {
               ownerUserId: currentUserId,
               isOwner: true
@@ -634,7 +634,7 @@ export default function Home() {
         // User has a relationship - check if it's accepted
         if (memberData.status === 'accepted') {
           // Relationship exists and is accepted - user is an active caregiver
-          console.log('✅ User is an accepted caregiver, owner:', memberData.owner_user_id, 'status:', memberData.status)
+          console.log(' User is an accepted caregiver, owner:', memberData.owner_user_id, 'status:', memberData.status)
           const result = {
             ownerUserId: memberData.owner_user_id,
             isOwner: false
@@ -644,7 +644,7 @@ export default function Home() {
           return result
         } else {
           // Relationship exists but is pending or rejected - user is still considered owner until accepted
-          console.log('⚠️ User has pending/rejected caregiver invitation (status:', memberData.status, '), but is owner for now:', currentUserId)
+          console.log(' User has pending/rejected caregiver invitation (status:', memberData.status, '), but is owner for now:', currentUserId)
           const result = {
             ownerUserId: currentUserId,
             isOwner: true
@@ -656,7 +656,7 @@ export default function Home() {
       }
 
       // Default: user is an owner
-      console.log('✅ User is an owner:', currentUserId)
+      console.log(' User is an owner:', currentUserId)
       const result = {
         ownerUserId: currentUserId,
         isOwner: true
@@ -870,7 +870,7 @@ export default function Home() {
   const handleDispense = async (dayOfWeek: number, timeFrame?: 'morning' | 'afternoon' | 'evening') => {
     // Check Pi connection first
     if (!piConnected) {
-      alert('⚠️ Not connected to Raspberry Pi! Make sure the server is running.')
+      alert(' Not connected to Raspberry Pi! Make sure the server is running.')
       return
     }
 
@@ -927,7 +927,7 @@ export default function Home() {
           const nextDayOfWeek = dayOfWeek === 6 ? 0 : 6 // Saturday -> Sunday, Sunday -> Saturday
           const nextDay = days.find(d => d.dayOfWeek === nextDayOfWeek)
           if (nextDay) {
-            alert(`✅ All time frames for ${day.name} have been dispensed. Moving to ${nextDay.name}.`)
+            alert(` All time frames for ${day.name} have been dispensed. Moving to ${nextDay.name}.`)
             // Reset current day's dispensed frames and move to next day
             setDays(prevDays => 
               prevDays.map(d => 
@@ -1004,7 +1004,7 @@ export default function Home() {
       //   const frameOrder = { morning: 1, afternoon: 2, evening: 3 }
       //   // If trying to dispense an earlier time frame that was already done, block it
       //   if (frameOrder[targetTimeFrame] < frameOrder[lastFrame as keyof typeof frameOrder]) {
-      //     alert(`⚠️ ${TIME_FRAMES[targetTimeFrame].label} bundle was already dispensed. Next is ${lastFrame === 'morning' ? 'Afternoon' : 'Evening'}.`)
+      //     alert(` ${TIME_FRAMES[targetTimeFrame].label} bundle was already dispensed. Next is ${lastFrame === 'morning' ? 'Afternoon' : 'Evening'}.`)
       //     return
       //   }
       // }
@@ -1013,13 +1013,13 @@ export default function Home() {
       // Original code commented out - allow dispensing anytime for SMS testing
       // if (!isInTimeFrame && !isInEarlyWindow) {
       //   const nextFrameStart = frameInfo.start
-      //   alert(`⚠️ ${TIME_FRAMES[targetTimeFrame].label} time frame hasn't started yet.\n\nTime frame: ${frameInfo.start} - ${frameInfo.end}\nCurrent time: ${currentTimeStr}\n\nYou can dispense early starting 30 minutes before the time frame (30 min before ${nextFrameStart}).`)
+      //   alert(` ${TIME_FRAMES[targetTimeFrame].label} time frame hasn't started yet.\n\nTime frame: ${frameInfo.start} - ${frameInfo.end}\nCurrent time: ${currentTimeStr}\n\nYou can dispense early starting 30 minutes before the time frame (30 min before ${nextFrameStart}).`)
       //   return
       // }
       // 
       // if (isInEarlyWindow) {
       //   isEarlyDispense = true
-      //   const confirmMessage = `⚠️ Early Dispense Warning\n\nYou are dispensing ${TIME_FRAMES[targetTimeFrame].label} bundle 30 minutes before the time frame starts.\n\nTime frame: ${frameInfo.start} - ${frameInfo.end}\nCurrent time: ${currentTimeStr}\n\nAre you sure you want to dispense early?`
+      //   const confirmMessage = ` Early Dispense Warning\n\nYou are dispensing ${TIME_FRAMES[targetTimeFrame].label} bundle 30 minutes before the time frame starts.\n\nTime frame: ${frameInfo.start} - ${frameInfo.end}\nCurrent time: ${currentTimeStr}\n\nAre you sure you want to dispense early?`
       //   if (!confirm(confirmMessage)) {
       //     return // User cancelled
       //   }
@@ -1124,9 +1124,9 @@ export default function Home() {
             const smsResult = await sendSmsViaPi(phoneNumbers, smsMessage)
             
             if (smsResult.success) {
-              console.log(`✅ SMS notification sent via SIMCOM to ${phoneNumbers.length} recipient(s):`, smsResult)
+              console.log(` SMS notification sent via SIMCOM to ${phoneNumbers.length} recipient(s):`, smsResult)
             } else {
-              console.warn('⚠️ SMS notification failed:', smsResult)
+              console.warn(' SMS notification failed:', smsResult)
             }
           } else {
             console.log('ℹ️ No phone numbers found in profile, skipping SMS notification')
@@ -1256,7 +1256,7 @@ export default function Home() {
       }
       
       if (!isInRange) {
-        alert(`⚠️ Invalid Time\n\nTime "${timeFrameTime.slice(0, 5)}" is outside the allowed range for ${frameInfo.label}.\n\nAllowed time range: ${frameInfo.start} - ${frameInfo.end}\n\nPlease select a time within this range.`)
+        alert(` Invalid Time\n\nTime "${timeFrameTime.slice(0, 5)}" is outside the allowed range for ${frameInfo.label}.\n\nAllowed time range: ${frameInfo.start} - ${frameInfo.end}\n\nPlease select a time within this range.`)
         return
       }
 
@@ -1313,7 +1313,7 @@ export default function Home() {
       await fetchDayData()
       setEditingTimeFrameTime(null)
       setTimeFrameTime('')
-      alert(`✅ ${frameInfo.label} time set to ${timeFrameTime.slice(0, 5)} for ${dayName}!`)
+      alert(` ${frameInfo.label} time set to ${timeFrameTime.slice(0, 5)} for ${dayName}!`)
     } catch (error: any) {
       console.error('Error saving time frame time:', error)
       alert(`Error: ${error?.message || 'Unknown error'}`)
@@ -1361,7 +1361,7 @@ export default function Home() {
         await fetchDayData()
         setEditingMedication(null)
         setNewMedication({ name: '' })
-        alert(`✅ ${newMedication.name} updated in ${dayName} ${TIME_FRAMES[timeFrame as keyof typeof TIME_FRAMES].label}!`)
+        alert(` ${newMedication.name} updated in ${dayName} ${TIME_FRAMES[timeFrame as keyof typeof TIME_FRAMES].label}!`)
       } else {
         // Get or create day_config for new medication
         const { data: existingConfig } = await supabase
@@ -1410,7 +1410,7 @@ export default function Home() {
         await fetchDayData()
         setAddingMedication(null)
         setNewMedication({ name: '' })
-        alert(`✅ ${newMedication.name} added to ${dayName} ${TIME_FRAMES[timeFrame as keyof typeof TIME_FRAMES].label}!`)
+        alert(` ${newMedication.name} added to ${dayName} ${TIME_FRAMES[timeFrame as keyof typeof TIME_FRAMES].label}!`)
       }
     } catch (error: any) {
       console.error('Error saving medication:', error)
@@ -1430,7 +1430,7 @@ export default function Home() {
       if (error) throw error
 
       await fetchDayData()
-      alert('✅ Medication removed!')
+      alert(' Medication removed!')
     } catch (error: any) {
       console.error('Error removing medication:', error)
       alert(`Error: ${error?.message || 'Unknown error'}`)
@@ -1507,7 +1507,7 @@ export default function Home() {
       }
 
       await fetchDayData()
-      alert(`✅ Copied ${sourceMedications.length} medication(s) to ${targetFrames.map(tf => TIME_FRAMES[tf].label).join(' and ')}!`)
+      alert(`Copied ${sourceMedications.length} medication(s) to ${targetFrames.map(tf => TIME_FRAMES[tf].label).join(' and ')}!`)
     } catch (error: any) {
       console.error('Error copying medications:', error)
       alert(`Error: ${error?.message || 'Unknown error'}`)
@@ -1564,9 +1564,9 @@ export default function Home() {
           : 'bg-yellow-100 text-yellow-800 border-yellow-300'
       } border`}>
         {piConnected ? (
-          <>✅ Connected to Raspberry Pi</>
+          <> Connected to Raspberry Pi</>
         ) : (
-          <>⚠️ Raspberry Pi offline - Dispensing disabled</>
+          <> Raspberry Pi offline - Dispensing disabled</>
         )}
       </div>
 
@@ -1619,7 +1619,7 @@ export default function Home() {
                           className="text-xs px-2 sm:px-3 py-1 sm:py-1.5 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition shadow-sm font-medium"
                           title="Copy to other time frames"
                         >
-                          📋 Copy
+                           Copy
                         </button>
                       )}
                     </div>
@@ -1785,7 +1785,7 @@ export default function Home() {
                 onClick={handleSaveMedication}
                 className="flex-1 px-4 py-3 text-sm sm:text-base bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-lg hover:from-blue-600 hover:to-blue-700 transition shadow-lg font-semibold"
               >
-                {editingMedication ? '✅ Update Medication' : '✅ Add Medication'}
+                {editingMedication ? ' Update Medication' : ' Add Medication'}
               </button>
             </div>
           </div>

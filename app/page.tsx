@@ -1677,7 +1677,7 @@ export default function Home() {
                                 title="Edit time"
                                 type="button"
                               >
-                                ✏️ Edit Time
+                                 Edit Time
                               </button>
                             ) : (
                               <button
@@ -1825,7 +1825,7 @@ export default function Home() {
                   min={TIME_FRAMES[editingTimeFrameTime.timeFrame as keyof typeof TIME_FRAMES].start}
                   max={TIME_FRAMES[editingTimeFrameTime.timeFrame as keyof typeof TIME_FRAMES].end}
                   className="w-full border-2 border-gray-300 rounded-lg px-4 py-3 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition"
-                  required
+                
                 />
                 <div className="mt-2 p-2.5 bg-blue-50 rounded-lg border border-blue-200">
                   <p className="text-xs font-medium text-blue-800 flex items-center gap-1.5">

@@ -77,7 +77,6 @@ export default function Home() {
     name: ''
   })
   const [timeFrameTime, setTimeFrameTime] = useState('')
-  const [showSuccessMessage, setShowSuccessMessage] = useState<string | null>(null)
   // Caregiver access disabled temporarily to fix signup
 
   // Check for password reset hash fragment and redirect to reset-password page
@@ -1411,7 +1410,7 @@ export default function Home() {
         await fetchDayData()
         setAddingMedication(null)
         setNewMedication({ name: '' })
-       setShowSuccessMessage(`${newMedication.name} added to ${dayName} ${TIME_FRAMES[timeFrame as keyof typeof TIME_FRAMES].label}!`)
+       alert(` ${newMedication.name} added to ${dayName} ${TIME_FRAMES[timeFrame as keyof typeof TIME_FRAMES].label}!`)
       }
     } catch (error: any) {
       console.error('Error saving medication:', error)
@@ -1847,25 +1846,6 @@ export default function Home() {
               >
                 Cancel
               </button>
-                    {/* Custom Success Notification - Centered */}
-      {showSuccessMessage && (
-        <div className="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-[100] p-4">
-          <div className="bg-white rounded-xl shadow-2xl p-6 sm:p-8 max-w-sm w-full">
-            <div className="text-center">
-              <div className="mb-4 text-4xl text-green-500">✓</div>
-              <p className="text-lg sm:text-xl font-semibold text-gray-800 mb-4">
-                {showSuccessMessage}
-              </p>
-              <button
-                onClick={() => setShowSuccessMessage(null)}
-                className="w-full sm:w-auto px-6 py-3 bg-blue-500 hover:bg-blue-600 text-white rounded-lg font-medium transition-colors"
-              >
-                OK
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
               <button
                 onClick={handleSaveTimeFrameTime}
                 className="flex-1 px-4 py-3 text-sm sm:text-base bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-lg hover:from-blue-600 hover:to-blue-700 transition shadow-lg font-semibold"

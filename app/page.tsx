@@ -1738,7 +1738,7 @@ export default function Home() {
 
       {/* Add/Edit Medication Modal - Enhanced UI */}
       {(addingMedication || editingMedication) && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 sm:p-6">
+        <div className="fixed inset-0 bg-white bg-opacity-90 flex items-center justify-center z-50 p-4 sm:p-6">
           <div className="bg-white rounded-xl p-6 sm:p-8 w-full max-w-md shadow-2xl">
             <div className="flex items-center gap-3 mb-6">
               <span className="text-3xl">
@@ -1794,7 +1794,7 @@ export default function Home() {
 
       {/* Edit Time Frame Time Modal */}
       {editingTimeFrameTime && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 sm:p-6">
+        <div className="fixed inset-0 bg-white bg-opacity-90 flex items-center justify-center z-50 p-4 sm:p-6">
           <div className="bg-white rounded-xl p-6 sm:p-8 w-full max-w-md shadow-2xl">
             <div className="flex items-center gap-3 mb-6">
               <span className="text-3xl">

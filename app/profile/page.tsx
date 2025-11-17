@@ -51,7 +51,7 @@ export default function Profile() {
       
       // Periodically refresh caregiver list to see when invitations are accepted
       const refreshInterval = setInterval(async () => {
-        console.log('🔄 Auto-refreshing caregiver list...')
+        console.log(' Auto-refreshing caregiver list...')
         await fetchCaregivers()
       }, 5000) // Check every 5 seconds
       
@@ -1298,7 +1298,7 @@ export default function Profile() {
                       </p>
                       {caregiver.status === 'pending' && (
                         <p className="text-xs text-yellow-600 mt-1">
-                          ⏳ Waiting for {caregiver.user_profiles?.email || 'caregiver'} to accept the invitation
+                           Waiting for {caregiver.user_profiles?.email || 'caregiver'} to accept the invitation
                         </p>
                       )}
                     </div>

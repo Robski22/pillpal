@@ -856,14 +856,14 @@ export default function Home() {
       // Resolve owner to get correct user_id
       const resolved = await resolveOwner()
       if (!resolved) {
-        console.error('❌ Could not resolve owner')
+        console.error(' Could not resolve owner')
         return
       }
       
       // Use resolved values directly
       await fetchDayDataWithUserId(resolved.ownerUserId, resolved.isOwner)
     } catch (error: any) {
-      console.error('❌ Error in fetchDayData:', error)
+      console.error(' Error in fetchDayData:', error)
     }
   }
 

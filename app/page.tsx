@@ -1850,7 +1850,7 @@ export default function Home() {
                 onClick={handleSaveTimeFrameTime}
                 className="flex-1 px-4 py-3 text-sm sm:text-base bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-lg hover:from-blue-600 hover:to-blue-700 transition shadow-lg font-semibold"
               >
-                ✅ Set Time
+                 Set Time
               </button>
             </div>
           </div>

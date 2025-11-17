@@ -1221,7 +1221,7 @@ export default function Profile() {
                     disabled={acceptedCaregivers.length >= 1}
                     className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
                   >
-                    {showCaregiverForm ? 'Cancel' : acceptedCaregivers.length >= 1 ? 'Max Caregiver Added' : '+ Add Caregiver'}
+                    {showCaregiverForm ? 'Cancel' : acceptedCaregivers.length >= 1 ? 'Max Caregiver Added' : ' Add Caregiver'}
                   </button>
                 </div>
               </div>

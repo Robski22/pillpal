@@ -315,7 +315,7 @@ export default function Home() {
                 }
 
                 if (phoneNumbers.length > 0) {
-                  const smsMessage = `It's time for your medicine: ${medicationNames}`
+                                    const smsMessage = `${medicationNames}`
                   
                   // Send SMS via Pi WebSocket (SIMCOM module) to all recipients
                   const smsResult = await sendSmsViaPi(phoneNumbers, smsMessage)
@@ -1118,7 +1118,7 @@ export default function Home() {
           }
 
           if (phoneNumbers.length > 0) {
-            const smsMessage = `It's time for your medicine: ${medicationNames}`
+                        const smsMessage = `${medicationNames}`
             
             // Send SMS via Pi WebSocket (SIMCOM module) to all recipients
             const smsResult = await sendSmsViaPi(phoneNumbers, smsMessage)

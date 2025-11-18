@@ -1418,18 +1418,19 @@ export default function Home() {
         }
 
         // Save new medication to time_frame_medications table (time is at time frame level, not per medication)
-        const { error: medError } = await supabase
+        const { data: existingMed } = await supabase
           .from('time_frame_medications')
-          .insert({
-            day_config_id: dayConfigId,
-            time_frame: timeFrame,
-            medication_name: newMedication.name.trim(),
-            time: '00:00' // Placeholder - actual time is stored in day_config.time_frame_time
-          })
+          .select('id')
+          .eq('day_config_id', dayConfigId)
+          .eq('time_frame', timeFrame)
+          .eq('medication_name', newMedication.name.trim())
+          .maybeSingle()
 
-        if (medError) {
-          console.error(`Error saving medication:`, medError)
-          throw medError
+        if (existingMed) {
+          showNotification(`${newMedication.name} is already added to ${dayName} ${TIME_FRAMES[timeFrame as keyof typeof TIME_FRAMES].label}!`, 'warning')
+          setAddingMedication(null)
+          setNewMedication({ name: '' })
+          return
         }
 
         await fetchDayData()

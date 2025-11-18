@@ -1591,7 +1591,7 @@ export default function Home() {
           : 'bg-yellow-100 text-yellow-800 border-yellow-300'
       } border`}>
         {piConnected ? (
-          <> Connected</>
+          <> Connected to Raspberry Pi</>
         ) : (
           <> Raspberry Pi offline - Dispensing disabled</>
         )}
@@ -1934,5 +1934,8 @@ export default function Home() {
     </div>
   )
 }
+
+
+      
 
 

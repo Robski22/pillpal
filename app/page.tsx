@@ -1427,16 +1427,31 @@ export default function Home() {
           .maybeSingle()
 
         if (existingMed) {
-          showNotification(`${newMedication.name} is already added to ${dayName} ${TIME_FRAMES[timeFrame as keyof typeof TIME_FRAMES].label}!`, 'warning')
+          showNotification('Same medication pill', 'warning')
           setAddingMedication(null)
           setNewMedication({ name: '' })
           return
         }
 
+        // Save new medication to time_frame_medications table (time is at time frame level, not per medication)
+        const { error: medError } = await supabase
+          .from('time_frame_medications')
+          .insert({
+            day_config_id: dayConfigId,
+            time_frame: timeFrame,
+            medication_name: newMedication.name.trim(),
+            time: '00:00' // Placeholder - actual time is stored in day_config.time_frame_time
+          })
+
+        if (medError) {
+          console.error(`Error saving medication:`, medError)
+          throw medError
+        }
+
         await fetchDayData()
         setAddingMedication(null)
         setNewMedication({ name: '' })
-       showNotification(`${newMedication.name} added to ${dayName} ${TIME_FRAMES[timeFrame as keyof typeof TIME_FRAMES].label}!`, 'success')
+        showNotification(`${newMedication.name} added to ${dayName} ${TIME_FRAMES[timeFrame as keyof typeof TIME_FRAMES].label}!`, 'success')
       }
     } catch (error: any) {
       console.error('Error saving medication:', error)

@@ -1829,7 +1829,7 @@ export default function Home() {
                 />
                 <div className="mt-2 p-2.5 bg-blue-50 rounded-lg border border-blue-200">
                   <p className="text-xs font-medium text-blue-800 flex items-center gap-1.5">
-                    <span>⏰</span>
+                    <span></span>
                     <span>Allowed time range: <span className="font-bold">{TIME_FRAMES[editingTimeFrameTime.timeFrame as keyof typeof TIME_FRAMES].start}</span> - <span className="font-bold">{TIME_FRAMES[editingTimeFrameTime.timeFrame as keyof typeof TIME_FRAMES].end}</span></span>
                   </p>
                   <p className="text-xs text-blue-700 mt-1">

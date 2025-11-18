@@ -1886,10 +1886,10 @@ export default function Home() {
 
       {/* Notification Toast */}
       {notification && (
-        <div className="fixed inset-0 flex items-center justify-center z-50 p-4 pointer-events-none">
+        <div className="fixed top-4 left-0 right-0 flex justify-center z-50 p-4 pointer-events-none">
           <div className={`rounded-lg shadow-lg p-4 max-w-md pointer-events-auto transform transition-all duration-300 ease-in-out ${
             notification.type === 'success' ? 'bg-green-500 text-white' :
-            notification.type === 'error' ? 'bg-red-500 text-white' :
+            notification.type === 'error' ? 'bg-white text-gray-800 border-2 border-red-500' :
             notification.type === 'warning' ? 'bg-yellow-500 text-white' :
             'bg-blue-500 text-white'
           }`}>
@@ -1897,7 +1897,9 @@ export default function Home() {
               <p className="font-medium">{notification.message}</p>
               <button
                 onClick={() => setNotification(null)}
-                className="text-white hover:text-gray-200 font-bold text-xl"
+                className={`font-bold text-xl ${
+                  notification.type === 'error' ? 'text-gray-600 hover:text-gray-800' : 'text-white hover:text-gray-200'
+                }`}
               >
                 ×
               </button>

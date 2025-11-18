@@ -920,7 +920,7 @@ export default function Home() {
       // TEMPORARILY DISABLED FOR TESTING - Check if this time frame was already dispensed (ONCE PER TIME FRAME LIMIT)
       // const dispensedFrames = day.dispensedTimeFrames || []
       // if (targetTimeFrame && dispensedFrames.includes(targetTimeFrame)) {
-      //   alert(`⚠️ ${TIME_FRAMES[targetTimeFrame].label} bundle has already been dispensed for ${day.name}. Each time frame can only be dispensed once per day.`)
+      //   alert(` ${TIME_FRAMES[targetTimeFrame].label} bundle has already been dispensed for ${day.name}. Each time frame can only be dispensed once per day.`)
       //   return
       // }
       

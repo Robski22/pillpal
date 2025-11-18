@@ -1233,7 +1233,7 @@ export default function Profile() {
                 </label>
                 <p className="text-xs text-gray-500 mb-3">
                   They must have signed up first. Enter their exact email address.<br/>
-                  <span className="font-medium text-orange-600">⚠️ Only ONE caregiver allowed per account.</span>
+                  <span className="font-medium text-orange-600"> Only ONE caregiver allowed per account.</span>
                 </p>
                 <div className="flex gap-2">
                   <input

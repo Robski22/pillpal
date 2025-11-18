@@ -77,7 +77,32 @@ export default function Home() {
     name: ''
   })
   const [timeFrameTime, setTimeFrameTime] = useState('')
+  const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' | 'info' | 'warning' } | null>(null)
+  const [confirmDialog, setConfirmDialog] = useState<{ message: string; onConfirm: () => void; onCancel: () => void } | null>(null)
   // Caregiver access disabled temporarily to fix signup
+
+  // Helper function to show notifications
+  const showNotification = (message: string, type: 'success' | 'error' | 'info' | 'warning' = 'info') => {
+    setNotification({ message, type })
+    setTimeout(() => setNotification(null), 4000)
+  }
+
+  // Helper function to show confirm dialog
+  const showConfirm = (message: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      setConfirmDialog({
+        message,
+        onConfirm: () => {
+          setConfirmDialog(null)
+          resolve(true)
+        },
+        onCancel: () => {
+          setConfirmDialog(null)
+          resolve(false)
+        }
+      })
+    })
+  }
 
   // Check for password reset hash fragment and redirect to reset-password page
   useEffect(() => {
@@ -489,7 +514,7 @@ export default function Home() {
             
             if (refreshError || !refreshedSession) {
               console.error(' Failed to refresh session:', refreshError)
-              alert('Your session has expired. Please log in again.')
+              showNotification('Your session has expired. Please log in again.', 'error')
               router.push('/login')
               return null
             }
@@ -497,7 +522,7 @@ export default function Home() {
             return refreshedSession
           } else {
             // No session to refresh, redirect to login
-            alert('Your session has expired. Please log in again.')
+            showNotification('Your session has expired. Please log in again.', 'error')
             router.push('/login')
             return null
           }
@@ -508,7 +533,7 @@ export default function Home() {
       
       if (!session?.user) {
         console.error(' No user session')
-        alert('Not logged in. Please log in again.')
+        showNotification('Not logged in. Please log in again.', 'error')
         router.push('/login')
         return null
       }
@@ -538,18 +563,18 @@ export default function Home() {
           if (currentSession) {
             const { data: { session: refreshedSession }, error: refreshError } = await supabase.auth.refreshSession(currentSession)
             if (refreshError || !refreshedSession) {
-              alert('Your session has expired. Please log in again.')
+              showNotification('Your session has expired. Please log in again.', 'error')
               router.push('/login')
               return null
             }
             return refreshedSession
           } else {
-            alert('Your session has expired. Please log in again.')
+            showNotification('Your session has expired. Please log in again.', 'error')
             router.push('/login')
             return null
           }
         } catch (refreshErr) {
-          alert('Your session has expired. Please log in again.')
+          showNotification('Your session has expired. Please log in again.', 'error')
           router.push('/login')
           return null
         }
@@ -725,18 +750,18 @@ export default function Home() {
           
           if (retryResult.error) {
             if (retryResult.error.message?.includes('JWT') || retryResult.error.message?.includes('expired')) {
-              alert('Your session has expired. Please log in again.')
+              showNotification('Your session has expired. Please log in again.', 'error')
               router.push('/login')
               return
             }
-            alert(`Database error: ${retryResult.error.message || 'Failed to fetch data'}. Please try refreshing the page.`)
+            showNotification(`Database error: ${retryResult.error.message || 'Failed to fetch data'}. Please try refreshing the page.`, 'error')
             return
           }
           
           configs = retryResult.data
           error = null
         } else {
-          alert(`Database error: ${error.message || 'Failed to fetch data'}. Check console for details.`)
+          showNotification(`Database error: ${error.message || 'Failed to fetch data'}. Check console for details.`, 'error')
           return
         }
       }
@@ -843,7 +868,7 @@ export default function Home() {
         hint: error?.hint,
         code: error?.code
       })
-      alert(`Error loading data: ${error?.message || 'Unknown error'}. Check browser console for details.`)
+      showNotification(`Error loading data: ${error?.message || 'Unknown error'}. Check browser console for details.`, 'error')
     }
   }
 
@@ -870,7 +895,7 @@ export default function Home() {
   const handleDispense = async (dayOfWeek: number, timeFrame?: 'morning' | 'afternoon' | 'evening') => {
     // Check Pi connection first
     if (!piConnected) {
-      alert(' Not connected to Raspberry Pi! Make sure the server is running.')
+      showNotification('Not connected to Raspberry Pi! Make sure the server is running.', 'warning')
       return
     }
 
@@ -927,7 +952,7 @@ export default function Home() {
           const nextDayOfWeek = dayOfWeek === 6 ? 0 : 6 // Saturday -> Sunday, Sunday -> Saturday
           const nextDay = days.find(d => d.dayOfWeek === nextDayOfWeek)
           if (nextDay) {
-            alert(` All time frames for ${day.name} have been dispensed. Moving to ${nextDay.name}.`)
+            showNotification(`All time frames for ${day.name} have been dispensed. Moving to ${nextDay.name}.`, 'info')
             // Reset current day's dispensed frames and move to next day
             setDays(prevDays => 
               prevDays.map(d => 
@@ -940,7 +965,7 @@ export default function Home() {
             if (nextDay.medications.morning.length > 0) {
               await handleDispense(nextDayOfWeek, 'morning')
             } else {
-              alert(`No medications configured for ${nextDay.name} Morning.`)
+              showNotification(`No medications configured for ${nextDay.name} Morning.`, 'warning')
             }
             return
           }
@@ -949,7 +974,7 @@ export default function Home() {
       
       // TEMPORARILY DISABLED FOR TESTING - All time frame restrictions disabled
       if (!targetTimeFrame) {
-        alert('No time frame selected. Please select a time frame to dispense.')
+        showNotification('No time frame selected. Please select a time frame to dispense.', 'warning')
         return
       }
       
@@ -1029,7 +1054,7 @@ export default function Home() {
       frameMedications = day.medications[targetTimeFrame] || []
       
       if (frameMedications.length === 0) {
-        alert(`No medications in ${TIME_FRAMES[targetTimeFrame].label} to dispense!`)
+        showNotification(`No medications in ${TIME_FRAMES[targetTimeFrame].label} to dispense!`, 'warning')
         return
       }
       
@@ -1152,7 +1177,7 @@ export default function Home() {
 
       } catch (error: any) {
       console.error('Error dispensing bundle:', error)
-      alert(`❌ Error: ${error.message}`)
+      showNotification(`Error: ${error.message}`, 'error')
       // Log manual dispense error
       try {
         const { data: { session } } = await supabase.auth.getSession()
@@ -1219,7 +1244,7 @@ export default function Home() {
     if (!editingTimeFrameTime) return
 
     if (!timeFrameTime || timeFrameTime.trim() === '') {
-      alert('Please enter a time')
+      showNotification('Please enter a time', 'warning')
       return
     }
 
@@ -1256,7 +1281,7 @@ export default function Home() {
       }
       
       if (!isInRange) {
-        alert(` Invalid Time\n\nTime "${timeFrameTime.slice(0, 5)}" is outside the allowed range for ${frameInfo.label}.\n\nAllowed time range: ${frameInfo.start} - ${frameInfo.end}\n\nPlease select a time within this range.`)
+        showNotification(`Invalid Time: "${timeFrameTime.slice(0, 5)}" is outside the allowed range for ${frameInfo.label}. Allowed time range: ${frameInfo.start} - ${frameInfo.end}`, 'error')
         return
       }
 
@@ -1313,10 +1338,10 @@ export default function Home() {
       await fetchDayData()
       setEditingTimeFrameTime(null)
       setTimeFrameTime('')
-      alert(` ${frameInfo.label} time set to ${timeFrameTime.slice(0, 5)} for ${dayName}!`)
+      showNotification(`${frameInfo.label} time set to ${timeFrameTime.slice(0, 5)} for ${dayName}!`, 'success')
     } catch (error: any) {
       console.error('Error saving time frame time:', error)
-      alert(`Error: ${error?.message || 'Unknown error'}`)
+      showNotification(`Error: ${error?.message || 'Unknown error'}`, 'error')
     }
   }
 
@@ -1326,7 +1351,7 @@ export default function Home() {
     if (!context) return
 
     if (!newMedication.name || newMedication.name.trim() === '') {
-      alert('Please enter a medication name')
+      showNotification('Please enter a medication name', 'warning')
       return
     }
 
@@ -1361,7 +1386,7 @@ export default function Home() {
         await fetchDayData()
         setEditingMedication(null)
         setNewMedication({ name: '' })
-        alert(` ${newMedication.name} updated in ${dayName} ${TIME_FRAMES[timeFrame as keyof typeof TIME_FRAMES].label}!`)
+        showNotification(`${newMedication.name} updated in ${dayName} ${TIME_FRAMES[timeFrame as keyof typeof TIME_FRAMES].label}!`, 'success')
       } else {
         // Get or create day_config for new medication
         const { data: existingConfig } = await supabase
@@ -1410,16 +1435,17 @@ export default function Home() {
         await fetchDayData()
         setAddingMedication(null)
         setNewMedication({ name: '' })
-       alert(` ${newMedication.name} added to ${dayName} ${TIME_FRAMES[timeFrame as keyof typeof TIME_FRAMES].label}!`)
+       showNotification(`${newMedication.name} added to ${dayName} ${TIME_FRAMES[timeFrame as keyof typeof TIME_FRAMES].label}!`, 'success')
       }
     } catch (error: any) {
       console.error('Error saving medication:', error)
-      alert(`Error: ${error?.message || 'Unknown error'}`)
+      showNotification(`Error: ${error?.message || 'Unknown error'}`, 'error')
     }
   }
 
   const handleRemoveMedication = async (medicationId: string) => {
-    if (!confirm('Remove this medication?')) return
+    const confirmed = await showConfirm('Remove this medication?')
+    if (!confirmed) return
 
     try {
       const { error } = await supabase
@@ -1430,10 +1456,10 @@ export default function Home() {
       if (error) throw error
 
       await fetchDayData()
-      alert(' Medication removed!')
+      showNotification('Medication removed!', 'success')
     } catch (error: any) {
       console.error('Error removing medication:', error)
-      alert(`Error: ${error?.message || 'Unknown error'}`)
+      showNotification(`Error: ${error?.message || 'Unknown error'}`, 'error')
     }
   }
 
@@ -1443,11 +1469,12 @@ export default function Home() {
 
     const sourceMedications = day.medications[sourceTimeFrame]
     if (sourceMedications.length === 0) {
-      alert(`No medications in ${TIME_FRAMES[sourceTimeFrame].label} to copy`)
+      showNotification(`No medications in ${TIME_FRAMES[sourceTimeFrame].label} to copy`, 'warning')
       return
     }
 
-    if (!confirm(`Copy ${sourceMedications.length} medication(s) from ${TIME_FRAMES[sourceTimeFrame].label} to the other time frames?`)) {
+    const confirmed = await showConfirm(`Copy ${sourceMedications.length} medication(s) from ${TIME_FRAMES[sourceTimeFrame].label} to the other time frames?`)
+    if (!confirmed) {
       return
     }
 
@@ -1469,7 +1496,7 @@ export default function Home() {
         .single()
 
       if (!config) {
-        alert('Day config not found. Please add a medication first.')
+        showNotification('Day config not found. Please add a medication first.', 'warning')
         return
       }
 
@@ -1507,10 +1534,10 @@ export default function Home() {
       }
 
       await fetchDayData()
-      alert(`Copied ${sourceMedications.length} medication(s) to ${targetFrames.map(tf => TIME_FRAMES[tf].label).join(' and ')}!`)
+      showNotification(`Copied ${sourceMedications.length} medication(s) to ${targetFrames.map(tf => TIME_FRAMES[tf].label).join(' and ')}!`, 'success')
     } catch (error: any) {
       console.error('Error copying medications:', error)
-      alert(`Error: ${error?.message || 'Unknown error'}`)
+      showNotification(`Error: ${error?.message || 'Unknown error'}`, 'error')
     }
   }
 
@@ -1851,6 +1878,52 @@ export default function Home() {
                 className="flex-1 px-4 py-3 text-sm sm:text-base bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-lg hover:from-blue-600 hover:to-blue-700 transition shadow-lg font-semibold"
               >
                  Set Time
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Notification Toast */}
+      {notification && (
+        <div className="fixed top-4 right-4 z-50 transform transition-all duration-300 ease-in-out">
+          <div className={`rounded-lg shadow-lg p-4 max-w-md ${
+            notification.type === 'success' ? 'bg-green-500 text-white' :
+            notification.type === 'error' ? 'bg-red-500 text-white' :
+            notification.type === 'warning' ? 'bg-yellow-500 text-white' :
+            'bg-blue-500 text-white'
+          }`}>
+            <div className="flex items-center justify-between gap-4">
+              <p className="font-medium">{notification.message}</p>
+              <button
+                onClick={() => setNotification(null)}
+                className="text-white hover:text-gray-200 font-bold text-xl"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm Dialog */}
+      {confirmDialog && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl p-6 sm:p-8 w-full max-w-md shadow-2xl">
+            <h3 className="text-xl sm:text-2xl font-bold text-gray-800 mb-4">Confirm</h3>
+            <p className="text-gray-700 mb-6">{confirmDialog.message}</p>
+            <div className="flex flex-col sm:flex-row gap-3">
+              <button
+                onClick={confirmDialog.onCancel}
+                className="flex-1 px-4 py-3 text-sm sm:text-base bg-gray-200 rounded-lg hover:bg-gray-300 transition font-medium"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDialog.onConfirm}
+                className="flex-1 px-4 py-3 text-sm sm:text-base bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-lg hover:from-blue-600 hover:to-blue-700 transition shadow-lg font-semibold"
+              >
+                Confirm
               </button>
             </div>
           </div>

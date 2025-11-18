@@ -1427,7 +1427,7 @@ export default function Home() {
           .maybeSingle()
 
         if (existingMed) {
-          showNotification('Same medication pill', 'warning')
+          showNotification('Error: Can\'t add, Same medication', 'error')
           setAddingMedication(null)
           setNewMedication({ name: '' })
           return

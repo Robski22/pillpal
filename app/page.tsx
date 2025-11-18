@@ -1418,7 +1418,7 @@ export default function Home() {
         }
 
         // Save new medication to time_frame_medications table (time is at time frame level, not per medication)
-        const { data: existingMed } = await supabase
+       const { data: existingMed } = await supabase
           .from('time_frame_medications')
           .select('id')
           .eq('day_config_id', dayConfigId)
@@ -1885,29 +1885,29 @@ export default function Home() {
         </div>
       )}
 
-      {/* Notification Toast */}
-      {notification && (
-        <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 p-4 pointer-events-none">
-          <div className={`rounded-lg shadow-lg p-4 max-w-md pointer-events-auto transform transition-all duration-300 ease-in-out ${
-            notification.type === 'success' ? 'bg-blue-500 text-white' :
-            notification.type === 'error' ? 'bg-white text-gray-800 border-2 border-red-500' :
-            notification.type === 'warning' ? 'bg-yellow-500 text-white' :
-            'bg-blue-500 text-white'
-          }`}>
-            <div className="flex items-center justify-between gap-4">
-              <p className="font-medium">{notification.message}</p>
-              <button
-                onClick={() => setNotification(null)}
-                className={`font-bold text-xl ${
-                  notification.type === 'error' ? 'text-gray-600 hover:text-gray-800' : 'text-white hover:text-gray-200'
-                }`}
-              >
-                ×
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+       {/* Notification Toast */}
+       {notification && (
+         <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 p-4 pointer-events-none">
+           <div className={`rounded-lg shadow-lg p-4 max-w-md pointer-events-auto transform transition-all duration-300 ease-in-out ${
+             notification.type === 'success' ? 'bg-blue-500 text-white' :
+             notification.type === 'error' ? 'bg-white text-gray-800 border-2 border-red-500' :
+             notification.type === 'warning' ? 'bg-yellow-500 text-white' :
+             'bg-blue-500 text-white'
+           }`}>
+             <div className="flex items-start justify-between gap-4">
+               <p className="font-medium break-words flex-1 pr-2">{notification.message}</p>
+               <button
+                 onClick={() => setNotification(null)}
+                 className={`font-bold text-xl flex-shrink-0 ${
+                   notification.type === 'error' ? 'text-gray-600 hover:text-gray-800' : 'text-white hover:text-gray-200'
+                 }`}
+               >
+                 ×
+               </button>
+             </div>
+           </div>
+         </div>
+       )}
 
       {/* Confirm Dialog */}
       {confirmDialog && (

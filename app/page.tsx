@@ -1900,22 +1900,23 @@ export default function Home() {
         </div>
       )}
 
-       {/* Notification Toast */}
+       {/* Notification Toast - Mobile Optimized */}
        {notification && (
-         <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 p-4 pointer-events-none">
-           <div className={`rounded-lg shadow-lg p-4 max-w-md pointer-events-auto transform transition-all duration-300 ease-in-out ${
+         <div className="fixed top-0 left-0 right-0 z-50 px-4 pt-2 sm:pt-4 pointer-events-none">
+           <div className={`rounded-b-lg sm:rounded-lg shadow-xl py-3 px-4 sm:py-4 sm:px-4 max-w-md mx-auto pointer-events-auto transform transition-all duration-300 ease-in-out ${
              notification.type === 'success' ? 'bg-blue-500 text-white' :
-             notification.type === 'error' ? 'bg-white text-gray-800 border-2 border-red-500' :
+             notification.type === 'error' ? 'bg-white text-gray-800 border-b-4 border-red-500' :
              notification.type === 'warning' ? 'bg-yellow-500 text-white' :
              'bg-blue-500 text-white'
            }`}>
-             <div className="flex items-start justify-between gap-4">
-               <p className="font-medium break-words flex-1 pr-2">{notification.message}</p>
+             <div className="flex items-center justify-between gap-3">
+               <p className="font-medium text-sm sm:text-base break-words flex-1 pr-2 leading-relaxed">{notification.message}</p>
                <button
                  onClick={() => setNotification(null)}
-                 className={`font-bold text-xl flex-shrink-0 ${
+                 className={`font-bold text-lg sm:text-xl flex-shrink-0 w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center rounded-full hover:bg-black hover:bg-opacity-10 transition ${
                    notification.type === 'error' ? 'text-gray-600 hover:text-gray-800' : 'text-white hover:text-gray-200'
                  }`}
+                 aria-label="Close notification"
                >
                  ×
                </button>

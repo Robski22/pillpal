@@ -1909,19 +1909,19 @@ export default function Home() {
       {/* Confirm Dialog */}
       {confirmDialog && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl p-6 sm:p-8 w-full max-w-md shadow-2xl">
-            <h3 className="text-xl sm:text-2xl font-bold text-gray-800 mb-4">Confirm</h3>
-            <p className="text-gray-700 mb-6">{confirmDialog.message}</p>
+          <div className="bg-gradient-to-r from-blue-500 to-blue-600 rounded-xl p-6 sm:p-8 w-full max-w-md shadow-2xl">
+            <h3 className="text-xl sm:text-2xl font-bold text-white mb-4">Confirm</h3>
+            <p className="text-white mb-6">{confirmDialog.message}</p>
             <div className="flex flex-col sm:flex-row gap-3">
               <button
                 onClick={confirmDialog.onCancel}
-                className="flex-1 px-4 py-3 text-sm sm:text-base bg-gray-200 rounded-lg hover:bg-gray-300 transition font-medium"
+                className="flex-1 px-4 py-3 text-sm sm:text-base bg-white bg-opacity-20 text-white rounded-lg hover:bg-opacity-30 transition font-medium border border-white border-opacity-30"
               >
                 Cancel
               </button>
               <button
                 onClick={confirmDialog.onConfirm}
-                className="flex-1 px-4 py-3 text-sm sm:text-base bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-lg hover:from-blue-600 hover:to-blue-700 transition shadow-lg font-semibold"
+                className="flex-1 px-4 py-3 text-sm sm:text-base bg-white text-blue-600 rounded-lg hover:bg-gray-100 transition shadow-lg font-semibold"
               >
                 Confirm
               </button>

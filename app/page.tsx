@@ -1427,7 +1427,7 @@ export default function Home() {
           .maybeSingle()
 
         if (existingMed) {
-          showNotification('Error: Can\'t add, Same medication', 'error')
+          showNotification('Error: Can\'t add same medication', 'error')
           setAddingMedication(null)
           setNewMedication({ name: '' })
           return
@@ -1669,84 +1669,85 @@ export default function Home() {
                     
                     {medications.length > 0 ? (
                       <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
-                        {/* Medication Names - Compact List */}
-                        <div className="p-2.5 sm:p-3 border-b border-gray-100">
-                          <div className="flex items-start gap-2 mb-2">
-                            <span className="text-xs text-gray-500 font-medium mt-0.5">Medications:</span>
-                            <div className="flex-1 flex flex-wrap gap-1.5 sm:gap-2">
-                              {medications.map((med, index) => (
-                                <div key={med.id} className="flex items-center gap-1.5 group">
-                                  <span className="text-sm sm:text-base font-medium text-gray-800">
-                                    {med.medication_name}
-                                    {index < medications.length - 1 && <span className="text-gray-400">,</span>}
-                                  </span>
-                                  <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <button
-                                      onClick={() => handleEditMedication(med, day.dayOfWeek, timeFrame)}
-                                      className="px-1 py-0.5 text-blue-500 hover:text-blue-700 hover:bg-blue-50 rounded text-xs"
-                                      title="Edit medication name"
-                                    >
-                                      ✏️
-                                    </button>
-                                    <button
-                                      onClick={() => handleRemoveMedication(med.id)}
-                                      className="px-1 py-0.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded text-xs"
-                                      title="Remove"
-                                    >
-                                      ✕
-                                    </button>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
+                        {/* Medication List - Each medication as a row */}
+                        <div className="p-2 sm:p-3 border-b border-gray-100">
+                          <div className="mb-2">
+                            <span className="text-xs text-gray-500 font-medium">Medications:</span>
                           </div>
-                          {/* Show time frame time - ONE time for entire frame */}
-                          <div className="flex items-center justify-between gap-2 text-xs pt-2">
-                            <div className="flex items-center gap-2 text-gray-600">
-                              <span>🕐</span>
-                              {day.timeFrameTimes[timeFrame] ? (
-                                <span className="font-medium text-gray-800">{day.timeFrameTimes[timeFrame]}</span>
-                              ) : (
-                                <span className="text-gray-400 italic">No time set</span>
-                              )}
-                            </div>
-                            {day.timeFrameTimes[timeFrame] ? (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  handleEditTimeFrameTime(day.dayOfWeek, timeFrame)
-                                }}
-                                className="text-blue-500 hover:text-blue-700 hover:bg-blue-50 px-2 py-1 rounded text-xs cursor-pointer z-10 relative"
-                                title="Edit time"
-                                type="button"
+                          <div className="space-y-2">
+                            {medications.map((med) => (
+                              <div 
+                                key={med.id} 
+                                className="flex items-center justify-between gap-2 p-2 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
                               >
-                                 Edit Time
-                              </button>
-                            ) : (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  handleEditTimeFrameTime(day.dayOfWeek, timeFrame)
-                                }}
-                                className="text-blue-500 hover:text-blue-700 hover:bg-blue-50 px-2 py-1 rounded text-xs cursor-pointer z-10 relative"
-                                title="Set time"
-                                type="button"
-                              >
-                                 Set Time
-                              </button>
-                            )}
+                                <span className="text-sm sm:text-base font-medium text-gray-800 flex-1">
+                                  {med.medication_name}
+                                </span>
+                                <div className="flex gap-1.5 sm:gap-2">
+                                  <button
+                                    onClick={() => handleEditMedication(med, day.dayOfWeek, timeFrame)}
+                                    className="px-2 py-1.5 sm:px-3 sm:py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 active:bg-blue-700 transition text-xs sm:text-sm font-medium shadow-sm"
+                                    title="Edit medication name"
+                                  >
+                                    ✏️ Edit
+                                  </button>
+                                  <button
+                                    onClick={() => handleRemoveMedication(med.id)}
+                                    className="px-2 py-1.5 sm:px-3 sm:py-2 bg-red-500 text-white rounded-md hover:bg-red-600 active:bg-red-700 transition text-xs sm:text-sm font-medium shadow-sm"
+                                    title="Remove"
+                                  >
+                                    ✕ Remove
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
                           </div>
                         </div>
-                        
+                        {/* Show time frame time - ONE time for entire frame */}
+                        <div className="p-2.5 sm:p-3 flex items-center justify-between gap-2 border-t border-gray-100">
+                          <div className="flex items-center gap-2 text-gray-600">
+                            <span>🕐</span>
+                            {day.timeFrameTimes[timeFrame] ? (
+                              <span className="font-medium text-gray-800 text-xs sm:text-sm">{day.timeFrameTimes[timeFrame]}</span>
+                            ) : (
+                              <span className="text-gray-400 italic text-xs sm:text-sm">No time set</span>
+                            )}
+                          </div>
+                          {day.timeFrameTimes[timeFrame] ? (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleEditTimeFrameTime(day.dayOfWeek, timeFrame)
+                              }}
+                              className="text-blue-500 hover:text-blue-700 hover:bg-blue-50 px-2 py-1 rounded text-xs sm:text-sm cursor-pointer z-10 relative font-medium"
+                              title="Edit time"
+                              type="button"
+                            >
+                              Edit Time
+                            </button>
+                          ) : (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleEditTimeFrameTime(day.dayOfWeek, timeFrame)
+                              }}
+                              className="text-blue-500 hover:text-blue-700 hover:bg-blue-50 px-2 py-1 rounded text-xs sm:text-sm cursor-pointer z-10 relative font-medium"
+                              title="Set time"
+                              type="button"
+                            >
+                              Set Time
+                            </button>
+                          )}
+                        </div>
                         {/* Action Buttons - Compact */}
-                        <div className="p-2 sm:p-2.5 flex gap-2">
+                        <div className="p-2 sm:p-2.5 flex gap-2 border-t border-gray-100">
                           <button
                             onClick={() => handleDispense(day.dayOfWeek, timeFrame)}
                             disabled={!piConnected}
                             className="flex-1 px-3 py-2 bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-lg hover:from-green-600 hover:to-emerald-600 transition shadow-sm font-semibold disabled:bg-gray-300 disabled:cursor-not-allowed text-xs sm:text-sm"
                             title={`Dispense all ${medications.length} medication(s) in ${frameInfo.label} bundle`}
                           >
-                             Dispense ({medications.length})
+                            Dispense ({medications.length})
                           </button>
                           <button
                             onClick={() => handleAddMedication(day.dayOfWeek, timeFrame)}

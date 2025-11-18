@@ -1886,8 +1886,8 @@ export default function Home() {
 
       {/* Notification Toast */}
       {notification && (
-        <div className="fixed top-4 right-4 z-50 transform transition-all duration-300 ease-in-out">
-          <div className={`rounded-lg shadow-lg p-4 max-w-md ${
+        <div className="fixed inset-0 flex items-center justify-center z-50 p-4 pointer-events-none">
+          <div className={`rounded-lg shadow-lg p-4 max-w-md pointer-events-auto transform transition-all duration-300 ease-in-out ${
             notification.type === 'success' ? 'bg-green-500 text-white' :
             notification.type === 'error' ? 'bg-red-500 text-white' :
             notification.type === 'warning' ? 'bg-yellow-500 text-white' :

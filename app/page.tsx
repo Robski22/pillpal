@@ -4,8 +4,8 @@ import { useAuth } from '../src/contexts/AuthContext'
 import { useRouter } from 'next/navigation'
 import { useEffect, useState, useRef } from 'react'
 import { supabase } from '../src/lib/supabase'
-import { connectToPi, disconnectFromPi, isConnectedToPi, dispenseToPi, sendSmsViaPi } from '../src/lib/pi-websocket'
-import { getNearestSaturday, getNearestSunday, formatDate, getPhilippineTime } from '../src/lib/date-utils'
+import { connectToPi, disconnectFromPi, isConnectedToPi, dispenseToPi, sendSmsViaPi, confirmServo2Dispense } from '../src/lib/pi-websocket'
+import { formatDate, getPhilippineTime } from '../src/lib/date-utils'
 
 interface Medication {
   id: string
@@ -15,8 +15,9 @@ interface Medication {
 }
 
 interface DayData {
-  dayOfWeek: number // 0 = Sunday, 6 = Saturday
+  dayOfWeek: number // 6 = Saturday, 0 = Sunday (for UI labels only)
   name: string // "Saturday" or "Sunday"
+  selectedDate: string | null // Selected date in YYYY-MM-DD format (null = not set)
   medications: {
     morning: Medication[]
     afternoon: Medication[]
@@ -28,7 +29,7 @@ interface DayData {
     evening: string | null // Time for evening frame
   }
   status: string
-  servoNumber: number // 1 for Saturday, 2 for Sunday (for Pi server mapping)
+  servoNumber: number // All days use servo1
   lastDispensedTime?: string // Track last manual dispense time (HH:MM) for progressive scheduling
   dispensedTimeFrames?: string[] // Track which time frames have been dispensed (e.g., ['morning', 'afternoon'])
 }
@@ -40,34 +41,59 @@ const TIME_FRAMES = {
   evening: { label: 'Evening', start: '19:01', end: '03:00', default: '21:00' }
 }
 
+// Helper function to get day name from dayOfWeek (0 = Sunday, 1 = Monday, ..., 6 = Saturday)
+const getDayName = (dayOfWeek: number): string => {
+  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+  return dayNames[dayOfWeek] || 'Unknown'
+}
+
+// Helper function to get the next occurrence of a specific day
+const getNextDayDate = (dayOfWeek: number): Date => {
+  const now = getPhilippineTime()
+  const currentDayOfWeek = now.getDay()
+  const daysUntilTarget = (dayOfWeek - currentDayOfWeek + 7) % 7
+  const nextDate = new Date(now)
+  nextDate.setDate(now.getDate() + (daysUntilTarget === 0 ? 7 : daysUntilTarget))
+  nextDate.setHours(0, 0, 0, 0)
+  return nextDate
+}
+
 export default function Home() {
   const { user, loading, signOut } = useAuth()
   const router = useRouter()
   const [piConnected, setPiConnected] = useState(false)
   const [ownerUserId, setOwnerUserId] = useState<string | null>(null)
   const [isOwner, setIsOwner] = useState(true)
-  // Saturday (dayOfWeek = 6) and Sunday (dayOfWeek = 0)
-  // Both use servo1 (spins 30 degrees each time)
-  const [days, setDays] = useState<DayData[]>([
-    { 
-      dayOfWeek: 6, 
-      name: 'Saturday', 
-      medications: { morning: [], afternoon: [], evening: [] },
-      timeFrameTimes: { morning: null, afternoon: null, evening: null },
-      status: 'ready', 
-      servoNumber: 1,
-      dispensedTimeFrames: []
-    },
-    { 
-      dayOfWeek: 0, 
-      name: 'Sunday', 
-      medications: { morning: [], afternoon: [], evening: [] },
-      timeFrameTimes: { morning: null, afternoon: null, evening: null },
-      status: 'ready', 
-      servoNumber: 1,
-      dispensedTimeFrames: []
-    }
-  ])
+  // Saturday (dayOfWeek = 6) and Sunday (dayOfWeek = 0) - UI labels only
+  // Users can set any date for each day - no day restrictions
+  // All use servo1 (spins 30 degrees each time)
+  const [days, setDays] = useState<DayData[]>(() => {
+    // Initialize with selectedDate from localStorage if available
+    const saturdayDate = typeof window !== 'undefined' ? localStorage.getItem('pillpal_selectedDate_6') : null
+    const sundayDate = typeof window !== 'undefined' ? localStorage.getItem('pillpal_selectedDate_0') : null
+    return [
+      { 
+        dayOfWeek: 6, 
+        name: 'Saturday', 
+        selectedDate: saturdayDate,
+        medications: { morning: [], afternoon: [], evening: [] },
+        timeFrameTimes: { morning: null, afternoon: null, evening: null },
+        status: 'ready', 
+        servoNumber: 1,
+        dispensedTimeFrames: []
+      },
+      { 
+        dayOfWeek: 0, 
+        name: 'Sunday', 
+        selectedDate: sundayDate,
+        medications: { morning: [], afternoon: [], evening: [] },
+        timeFrameTimes: { morning: null, afternoon: null, evening: null },
+        status: 'ready', 
+        servoNumber: 1,
+        dispensedTimeFrames: []
+      }
+    ]
+  })
   const [editingDay, setEditingDay] = useState<number | null>(null) // dayOfWeek (6 or 0)
   const [editingTimeFrame, setEditingTimeFrame] = useState<'morning' | 'afternoon' | 'evening' | null>(null)
   const [addingMedication, setAddingMedication] = useState<{ dayOfWeek: number; timeFrame: string } | null>(null)
@@ -79,12 +105,45 @@ export default function Home() {
   const [timeFrameTime, setTimeFrameTime] = useState('')
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' | 'info' | 'warning' } | null>(null)
   const [confirmDialog, setConfirmDialog] = useState<{ message: string; onConfirm: () => void; onCancel: () => void } | null>(null)
+  const [servo2ConfirmDialog, setServo2ConfirmDialog] = useState<{ onConfirm: () => void; onCancel: () => void; isAt180?: boolean } | null>(null)
+  const servo2DialogTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const servo2DialogReopenTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const servo2DialogConfigRef = useRef<{ onConfirm: () => void; onCancel: () => void; isAt180?: boolean } | null>(null)
   // Caregiver access disabled temporarily to fix signup
 
   // Helper function to show notifications
   const showNotification = (message: string, type: 'success' | 'error' | 'info' | 'warning' = 'info') => {
     setNotification({ message, type })
     setTimeout(() => setNotification(null), 4000)
+  }
+  
+  // Helper function to setup auto-close/reopen cycle for servo2 dialog
+  const setupServo2DialogAutoCycle = () => {
+    // Clear any existing timeouts
+    if (servo2DialogTimeoutRef.current) {
+      clearTimeout(servo2DialogTimeoutRef.current)
+    }
+    if (servo2DialogReopenTimeoutRef.current) {
+      clearTimeout(servo2DialogReopenTimeoutRef.current)
+    }
+    
+    // Auto-close after 2 minutes
+    servo2DialogTimeoutRef.current = setTimeout(() => {
+      console.log('⏱️ Dialog auto-closing after 2 minutes')
+      setServo2ConfirmDialog(null)
+      servo2DialogTimeoutRef.current = null
+      
+      // Auto-reopen after 3 minutes total (1 minute after closing)
+      servo2DialogReopenTimeoutRef.current = setTimeout(() => {
+        console.log('⏱️ Dialog auto-reopening after 3 minutes total')
+        if (servo2DialogConfigRef.current) {
+          setServo2ConfirmDialog(servo2DialogConfigRef.current)
+          // Continue the cycle
+          setupServo2DialogAutoCycle()
+        }
+        servo2DialogReopenTimeoutRef.current = null
+      }, 1 * 60 * 1000) // 1 minute after closing (3 minutes total from when dialog first appeared)
+    }, 2 * 60 * 1000) // 2 minutes
   }
 
   // Helper function to show confirm dialog
@@ -162,17 +221,13 @@ export default function Home() {
 
       // Log only every 60 seconds to reduce console spam
       if (checkCounter % 60 === 0) {
-        console.log(`🕐 Checking schedules at ${currentTime} on ${currentDate} (Day: ${currentDayOfWeek === 6 ? 'Saturday' : currentDayOfWeek === 0 ? 'Sunday' : 'Weekday'})`)
+        console.log(`🕐 Checking schedules at ${currentTime} on ${currentDate} (Day: ${getDayName(currentDayOfWeek)})`)
       }
       checkCounter++
 
-      // Check for active schedules - only on Saturday (6) or Sunday (0)
-      if (currentDayOfWeek !== 6 && currentDayOfWeek !== 0) {
-        return // Not Saturday or Sunday, skip checking
-      }
-
-      // Find the day data for today (Saturday or Sunday)
-      const todayDay = days.find(d => d.dayOfWeek === currentDayOfWeek)
+      // Check if today's date matches any scheduled date (no day restriction)
+      const todayDate = `${year}-${month}-${day}`
+      const todayDay = days.find(d => d.selectedDate === todayDate)
       if (!todayDay) return
       
       // Get all medications for today (from all time frames)
@@ -285,7 +340,80 @@ export default function Home() {
             // Dispense ALL medications in this time frame bundle
             // Servo spins once for the entire bundle
             const response = await dispenseToPi('servo1', medicationNames)
-            console.log(' Auto-dispense bundle response:', response)
+            console.log('⏰ Auto-dispense bundle response:', response)
+
+            // Check if servo1 is at 180° (needs confirmation to reset)
+            const isAt180 = response?.servo1_at_180 === true
+            
+            // Show confirmation dialog after successful dispense (same as manual dispense)
+            if (response?.status === 'success') {
+              console.log('✅ Auto-dispense successful, showing confirmation dialog')
+              if (isAt180) {
+                console.log('🔄 Servo1 is at 180° - will reset to 0° if confirmed')
+              }
+              
+              // Create dialog config (same as manual dispense)
+              const dialogConfig = {
+                isAt180: isAt180,
+                onConfirm: async () => {
+                  console.log('✅ User clicked YES (auto-dispense)')
+                  // Clear all timeouts when user manually confirms
+                  if (servo2DialogTimeoutRef.current) {
+                    clearTimeout(servo2DialogTimeoutRef.current)
+                    servo2DialogTimeoutRef.current = null
+                  }
+                  if (servo2DialogReopenTimeoutRef.current) {
+                    clearTimeout(servo2DialogReopenTimeoutRef.current)
+                    servo2DialogReopenTimeoutRef.current = null
+                  }
+                  setServo2ConfirmDialog(null)
+                  servo2DialogConfigRef.current = null
+                  try {
+                    const servo2Response = await confirmServo2Dispense()
+                    if (servo2Response?.status === 'success') {
+                      if (isAt180 && servo2Response?.servo1_reset) {
+                        showNotification('Medicine dispensed! Servo1 reset to 0° and Servo2 completed.', 'success')
+                      } else {
+                        showNotification('Medicine dispensed successfully!', 'success')
+                      }
+                    } else {
+                      showNotification('Medicine dispense failed', 'error')
+                    }
+                  } catch (error: any) {
+                    console.error('❌ Error:', error)
+                    showNotification(`Error: ${error.message || 'Failed'}`, 'error')
+                  }
+                },
+                onCancel: () => {
+                  console.log('❌ User clicked NO (auto-dispense)')
+                  // Clear all timeouts when user manually cancels
+                  if (servo2DialogTimeoutRef.current) {
+                    clearTimeout(servo2DialogTimeoutRef.current)
+                    servo2DialogTimeoutRef.current = null
+                  }
+                  if (servo2DialogReopenTimeoutRef.current) {
+                    clearTimeout(servo2DialogReopenTimeoutRef.current)
+                    servo2DialogReopenTimeoutRef.current = null
+                  }
+                  setServo2ConfirmDialog(null)
+                  servo2DialogConfigRef.current = null
+                  if (isAt180) {
+                    showNotification('Cancelled. Servo1 will stay at 180° and Servo2 will not move.', 'info')
+                  } else {
+                    showNotification('Medicine dispense cancelled', 'info')
+                  }
+                }
+              }
+              
+              // Store config for reopening
+              servo2DialogConfigRef.current = dialogConfig
+              
+              // Set dialog
+              setServo2ConfirmDialog(dialogConfig)
+              
+              // Setup auto-close/reopen cycle: close after 2 min, reopen after 3 min total
+              setupServo2DialogAutoCycle()
+            }
 
             // Log auto dispense success for each medication in bundle
             try {
@@ -720,11 +848,12 @@ export default function Home() {
       console.log('📊 Fetching day data with user_id:', targetUserId, '(isOwner:', targetIsOwner, ')')
       
       // Fetch day_config for Saturday (6) and Sunday (0) (including time frame times)
+      // Note: day_of_week is just for UI organization, actual scheduling uses selectedDate
       let { data: configs, error } = await supabase
         .from('day_config')
         .select('id, user_id, day_of_week, medication_name, is_active, morning_time, afternoon_time, evening_time, created_at, updated_at')
         .eq('user_id', targetUserId)
-        .in('day_of_week', [6, 0]) // Saturday and Sunday only
+        .in('day_of_week', [6, 0]) // Saturday and Sunday (UI labels only)
 
       if (error) {
         console.error('❌ Supabase error fetching day_config:', error)
@@ -816,9 +945,14 @@ export default function Home() {
             evening: config.evening_time ? config.evening_time.slice(0, 5) : null
           }
 
+          // Load selectedDate from localStorage
+          const storageKey = `pillpal_selectedDate_${config.day_of_week}`
+          const savedDate = typeof window !== 'undefined' ? localStorage.getItem(storageKey) : null
+          
           dayData.push({
             dayOfWeek: config.day_of_week,
             name: dayName,
+            selectedDate: savedDate,
             medications: {
               morning: morningMeds.sort((a, b) => a.medication_name.localeCompare(b.medication_name)),
               afternoon: afternoonMeds.sort((a, b) => a.medication_name.localeCompare(b.medication_name)),
@@ -831,9 +965,14 @@ export default function Home() {
           })
         } else {
           // Day not configured yet - show as empty
+          // Load selectedDate from localStorage
+          const storageKey = `pillpal_selectedDate_${dayOfWeek}`
+          const savedDate = typeof window !== 'undefined' ? localStorage.getItem(storageKey) : null
+          
           dayData.push({
             dayOfWeek: dayOfWeek,
             name: dayName,
+            selectedDate: savedDate,
             medications: {
               morning: [],
               afternoon: [],
@@ -947,7 +1086,7 @@ export default function Home() {
         //   }
         // }
         
-        // If all time frames are dispensed, move to next day
+        // If all time frames are dispensed, move to next day (Saturday <-> Sunday)
         if (!targetTimeFrame) {
           const nextDayOfWeek = dayOfWeek === 6 ? 0 : 6 // Saturday -> Sunday, Sunday -> Saturday
           const nextDay = days.find(d => d.dayOfWeek === nextDayOfWeek)
@@ -1072,6 +1211,79 @@ export default function Home() {
       // Dispense ALL medications in the time frame bundle (servo spins once)
       const response = await dispenseToPi('servo1', medicationNames)
       console.log('✅ Manual dispense bundle response:', response)
+      
+      // Check if servo1 is at 180° (needs confirmation to reset)
+      const isAt180 = response?.servo1_at_180 === true
+      
+      // Show confirmation dialog after successful dispense
+      if (response?.status === 'success') {
+        console.log('✅ Dispense successful, showing confirmation dialog')
+        if (isAt180) {
+          console.log('🔄 Servo1 is at 180° - will reset to 0° if confirmed')
+        }
+        
+        // Create dialog config
+        const dialogConfig = {
+          isAt180: isAt180,
+          onConfirm: async () => {
+            console.log('✅ User clicked YES')
+            // Clear all timeouts when user manually confirms
+            if (servo2DialogTimeoutRef.current) {
+              clearTimeout(servo2DialogTimeoutRef.current)
+              servo2DialogTimeoutRef.current = null
+            }
+            if (servo2DialogReopenTimeoutRef.current) {
+              clearTimeout(servo2DialogReopenTimeoutRef.current)
+              servo2DialogReopenTimeoutRef.current = null
+            }
+            setServo2ConfirmDialog(null)
+            servo2DialogConfigRef.current = null
+            try {
+              const servo2Response = await confirmServo2Dispense()
+              if (servo2Response?.status === 'success') {
+                if (isAt180 && servo2Response?.servo1_reset) {
+                  showNotification('Medicine dispensed! Servo1 reset to 0° and Servo2 completed.', 'success')
+                } else {
+                  showNotification('Medicine dispensed successfully!', 'success')
+                }
+              } else {
+                showNotification('Medicine dispense failed', 'error')
+              }
+            } catch (error: any) {
+              console.error('❌ Error:', error)
+              showNotification(`Error: ${error.message || 'Failed'}`, 'error')
+            }
+          },
+          onCancel: () => {
+            console.log('❌ User clicked NO')
+            // Clear all timeouts when user manually cancels
+            if (servo2DialogTimeoutRef.current) {
+              clearTimeout(servo2DialogTimeoutRef.current)
+              servo2DialogTimeoutRef.current = null
+            }
+            if (servo2DialogReopenTimeoutRef.current) {
+              clearTimeout(servo2DialogReopenTimeoutRef.current)
+              servo2DialogReopenTimeoutRef.current = null
+            }
+            setServo2ConfirmDialog(null)
+            servo2DialogConfigRef.current = null
+            if (isAt180) {
+              showNotification('Cancelled. Servo1 will stay at 180° and Servo2 will not move.', 'info')
+            } else {
+              showNotification('Medicine dispense cancelled', 'info')
+            }
+          }
+        }
+        
+        // Store config for reopening
+        servo2DialogConfigRef.current = dialogConfig
+        
+        // Set dialog
+        setServo2ConfirmDialog(dialogConfig)
+        
+        // Setup auto-close/reopen cycle: close after 2 min, reopen after 3 min total
+        setupServo2DialogAutoCycle()
+      }
 
           // Update last dispensed time and mark this time frame as dispensed
           setDays(prevDays => 
@@ -1088,6 +1300,59 @@ export default function Home() {
               return d
             })
           )
+
+      // Check if servo2 confirmation is required (after servo1 dispenses)
+      // ALWAYS show dialog after successful servo1 dispense (servo2 integration)
+      console.log('🔍 Checking servo2 dialog trigger...')
+      console.log('🔍 Response object:', response)
+      console.log('🔍 Response status:', response?.status)
+      console.log('🔍 Response type:', typeof response)
+      console.log('🔍 Response keys:', response ? Object.keys(response) : 'null')
+      
+      // Show dialog if status is success (servo2 integration should always happen)
+      if (response && response.status === 'success') {
+        console.log('✅ Status is success - showing servo2 dialog')
+        console.log('🎯 Servo1 dispensed, showing medicine dispense confirmation dialog')
+        console.log('✅ Dialog will appear now')
+        
+        // Set dialog state immediately
+        setServo2ConfirmDialog({
+          onConfirm: async () => {
+            console.log('✅ User clicked YES - confirming servo2 dispense')
+            setServo2ConfirmDialog(null)
+            try {
+              // User said YES - move servo2 from 0° to 90°, wait 2s, then back to 0°
+              const servo2Response = await confirmServo2Dispense()
+              console.log('✅ Servo2 dispense confirmed:', servo2Response)
+              if (servo2Response?.status === 'success') {
+                showNotification('Medicine dispensed successfully!', 'success')
+              } else {
+                showNotification('Medicine dispense failed', 'error')
+              }
+            } catch (error: any) {
+              console.error('❌ Error confirming servo2 dispense:', error)
+              showNotification(`Error: ${error.message || 'Failed to dispense medicine'}`, 'error')
+            }
+          },
+          onCancel: () => {
+            console.log('❌ User clicked NO - cancelling servo2 dispense')
+            // User said NO - nothing happens, servo2 stays at 0°
+            setServo2ConfirmDialog(null)
+            showNotification('Medicine dispense cancelled', 'info')
+          }
+        })
+        
+        // Double-check state was set
+        setTimeout(() => {
+          console.log('🔍 Verifying dialog state was set...')
+        }, 200)
+      } else {
+        console.log('⚠️ Dialog NOT showing!')
+        console.log('⚠️ Response:', response)
+        console.log('⚠️ Response status:', response?.status)
+        console.log('⚠️ Full response object:', JSON.stringify(response, null, 2))
+        console.log('⚠️ Condition check:', response && response.status === 'success')
+      }
 
       // Log manual dispense success for each medication in bundle
       try {
@@ -1259,7 +1524,7 @@ export default function Home() {
 
       const dayOfWeek = editingTimeFrameTime.dayOfWeek
       const timeFrame = editingTimeFrameTime.timeFrame
-      const dayName = dayOfWeek === 6 ? 'Saturday' : 'Sunday'
+      const dayName = getDayName(dayOfWeek)
       const frameInfo = TIME_FRAMES[timeFrame as keyof typeof TIME_FRAMES]
 
       // Validate time is within time frame range
@@ -1366,7 +1631,7 @@ export default function Home() {
 
       const dayOfWeek = context.dayOfWeek
       const timeFrame = context.timeFrame
-      const dayName = dayOfWeek === 6 ? 'Saturday' : 'Sunday'
+      const dayName = getDayName(dayOfWeek)
 
       if (isEditing) {
         // Update existing medication (name only, time is at time frame level)
@@ -1427,7 +1692,7 @@ export default function Home() {
           .maybeSingle()
 
         if (existingMed) {
-          showNotification('Error: Can\'t add same medication', 'error')
+          showNotification('Error: Can\'t add, Same medication', 'error')
           setAddingMedication(null)
           setNewMedication({ name: '' })
           return
@@ -1516,10 +1781,9 @@ export default function Home() {
         return
       }
 
-      // Auto-calculate dates
-      const nearestSaturday = getNearestSaturday()
-      const nearestSunday = getNearestSunday()
-      const dayDate = dayOfWeek === 6 ? formatDate(nearestSaturday) : formatDate(nearestSunday)
+      // Auto-calculate date for the next occurrence of this day
+      const nextDayDate = getNextDayDate(dayOfWeek)
+      const dayDate = formatDate(nextDayDate)
 
       // Copy to other time frames
       const targetFrames = (['morning', 'afternoon', 'evening'] as const).filter(tf => tf !== sourceTimeFrame)
@@ -1628,6 +1892,45 @@ export default function Home() {
               </span>
             </div>
 
+            {/* Date Picker */}
+            <div className="mb-3 sm:mb-4">
+              <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1">
+                Schedule Date:
+              </label>
+              <input
+                type="date"
+                value={day.selectedDate || ''}
+                onChange={(e) => {
+                  const newDate = e.target.value
+                  const storageKey = `pillpal_selectedDate_${day.dayOfWeek}`
+                  if (newDate) {
+                    localStorage.setItem(storageKey, newDate)
+                  } else {
+                    localStorage.removeItem(storageKey)
+                  }
+                  setDays(prevDays =>
+                    prevDays.map(d =>
+                      d.dayOfWeek === day.dayOfWeek
+                        ? { ...d, selectedDate: newDate || null }
+                        : d
+                    )
+                  )
+                  if (newDate) {
+                    showNotification(`${day.name} scheduled for ${newDate}`, 'success')
+                  } else {
+                    showNotification(`${day.name} date cleared`, 'info')
+                  }
+                }}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm sm:text-base"
+                min={new Date().toISOString().split('T')[0]}
+              />
+              {day.selectedDate && (
+                <p className="text-xs text-gray-600 mt-1">
+                  Scheduled: {new Date(day.selectedDate).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+                </p>
+              )}
+            </div>
+
             {/* Time Frames with Multiple Medications - Enhanced UI */}
             <div className="mb-4 sm:mb-6 space-y-3">
               {(['morning', 'afternoon', 'evening'] as const).map((timeFrame) => {
@@ -1689,14 +1992,14 @@ export default function Home() {
                                     className="px-2 py-1.5 sm:px-3 sm:py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 active:bg-blue-700 transition text-xs sm:text-sm font-medium shadow-sm"
                                     title="Edit medication name"
                                   >
-                                     Edit
+                                    ✏️ Edit
                                   </button>
                                   <button
                                     onClick={() => handleRemoveMedication(med.id)}
                                     className="px-2 py-1.5 sm:px-3 sm:py-2 bg-red-500 text-white rounded-md hover:bg-red-600 active:bg-red-700 transition text-xs sm:text-sm font-medium shadow-sm"
                                     title="Remove"
                                   >
-                                     Remove
+                                    ✕ Remove
                                   </button>
                                 </div>
                               </div>
@@ -1944,6 +2247,38 @@ export default function Home() {
                 className="flex-1 px-4 py-3 text-sm sm:text-base bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 transition font-medium"
               >
                 Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Servo2 Confirmation Dialog - Medicine Dispense */}
+      {servo2ConfirmDialog && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl p-6 sm:p-8 w-full max-w-md shadow-2xl">
+            <div className="text-center mb-6">
+              <div className="text-5xl mb-4">💊</div>
+              <h3 className="text-xl sm:text-2xl font-bold text-gray-800 mb-2">Dispense Medicine?</h3>
+              <p className="text-gray-700 text-sm sm:text-base">
+                {servo2ConfirmDialog.isAt180 
+                  ? "Servo1 is at 180°. If you confirm, Servo2 will move to 90° and Servo1 will reset to 0°."
+                  : "Would you like to dispense the medicine? The secondary servo will dispense and return to position."
+                }
+              </p>
+            </div>
+            <div className="flex flex-col sm:flex-row gap-3">
+              <button
+                onClick={servo2ConfirmDialog.onCancel}
+                className="flex-1 px-4 py-3 text-sm sm:text-base bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 transition font-medium"
+              >
+                No
+              </button>
+              <button
+                onClick={servo2ConfirmDialog.onConfirm}
+                className="flex-1 px-4 py-3 text-sm sm:text-base bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-lg hover:from-green-600 hover:to-emerald-600 transition shadow-lg font-semibold"
+              >
+                Yes
               </button>
             </div>
           </div>

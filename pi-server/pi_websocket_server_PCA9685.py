@@ -124,10 +124,33 @@ class ServoController:
             logger.info(f"✅ Servo channel {channel} configured for 0-180° range")
             
             # Map servo IDs to PCA9685 channels
-            # servo1 = channel 0, servo2 = channel 1, etc.
+            # servo1 = channel 4, servo2 = channel 5
             # CHANGE CHANNEL NUMBERS IF YOUR SERVOS ARE ON DIFFERENT CHANNELS
-            self.servos['servo1'] = 4  # Channel 4 on PCA9685 (YOUR SERVO IS ON CHANNEL 4)
+            self.servos['servo1'] = 4  # Channel 4 on PCA9685 (main dispensing servo)
+            self.servos['servo2'] = 5  # Channel 5 on PCA9685 (secondary servo for additional dispense)
             logger.info(f"✅ Mapped servo1 to PCA9685 channel 4")
+            logger.info(f"✅ Mapped servo2 to PCA9685 channel 5")
+            
+            # Initialize servo2 (channel 5) - set to 0 degrees initially
+            channel2 = 5
+            self.kit.servo[channel2].actuation_range = 180
+            try:
+                self.kit.servo[channel2].set_pulse_width_range(500, 2400)
+                logger.info("✅ Servo2 pulse width set to 500-2400 microseconds")
+            except:
+                pass
+            
+            # Initialize servo2 position
+            if 'servo2' not in self.servo_positions:
+                self.servo_positions['servo2'] = 0.0
+                logger.info("📊 Starting servo2 at 0 degrees")
+                self.kit.servo[channel2].angle = 0
+                time.sleep(0.3)
+            else:
+                saved_angle2 = self.servo_positions['servo2']
+                logger.info(f"📊 Restoring servo2 to saved position: {saved_angle2} degrees")
+                self.kit.servo[channel2].angle = int(saved_angle2)
+                time.sleep(0.3)
             
             # CRITICAL: Don't set angle on initialization!
             # Don't do: self.kit.servo[0].angle = 0  # This would reset position!
@@ -247,6 +270,16 @@ class ServoController:
             except:
                 pass
             
+            # Special handling for 5th rotation (120° → 150°) to prevent overshoot
+            if current_angle == 120 and new_angle == 150:
+                logger.info("🔧 5th rotation detected (120° → 150°) - using conservative pulse width")
+                # Use slightly narrower pulse width to prevent overshooting 150°
+                try:
+                    self.kit.servo[channel].set_pulse_width_range(500, 2350)  # Slightly reduced max
+                    logger.info("✅ Applied conservative pulse width for 5th rotation")
+                except:
+                    pass
+            
             # Set the angle
             self.kit.servo[channel].angle = new_angle
             self.servo_positions[servo_id] = float(new_angle)  # Store as float for JSON compatibility
@@ -254,8 +287,11 @@ class ServoController:
             # For 180 degrees, use calibrated pulse width (not maximum)
             if new_angle == 180:
                 logger.info("🔧 Setting 180° with calibrated pulse width (2400 microseconds)")
-                # The set_pulse_width_range(500, 2400) should handle this automatically
-                # But we can verify the angle is set correctly
+                # Restore full pulse width range for 180°
+                try:
+                    self.kit.servo[channel].set_pulse_width_range(500, 2400)
+                except:
+                    pass
                 logger.info(f"🔧 Servo actuation_range: {self.kit.servo[channel].actuation_range}°")
             
             # Wait for movement to complete (servos need time to reach position)
@@ -263,6 +299,20 @@ class ServoController:
             wait_time = 0.8 if new_angle == 180 else 0.6
             time.sleep(wait_time)
             logger.info(f"⏱️  Waited {wait_time}s for servo to reach position")
+            
+            # CRITICAL: After 5th rotation (150°), verify and correct position to prevent overshoot
+            if new_angle == 150:
+                logger.info("🔧 5th rotation complete - verifying and correcting position to exactly 150°")
+                # Re-apply pulse width calibration and set exact angle again to ensure precision
+                try:
+                    self.kit.servo[channel].set_pulse_width_range(500, 2350)  # Keep conservative for correction
+                    self.kit.servo[channel].angle = 150  # Set exact angle again
+                    time.sleep(0.3)  # Wait for correction
+                    logger.info("✅ Position corrected to exactly 150°")
+                    # Restore normal pulse width for next rotation
+                    self.kit.servo[channel].set_pulse_width_range(500, 2400)
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not apply correction: {e}")
             
             # If we just reached 180° (6th dispense), automatically reset to 0° immediately
             if new_angle >= self.MAX_ANGLE:
@@ -293,6 +343,102 @@ class ServoController:
     def get_position(self, servo_id: str) -> Optional[float]:
         """Get current servo position"""
         return self.servo_positions.get(servo_id, None)
+    
+    def move_servo2_to_90(self) -> bool:
+        """
+        Move servo2 (channel 5) to 90 degrees
+        Called after main servo (servo1) completes its 30-degree rotation
+        """
+        try:
+            servo_id = 'servo2'
+            target_angle = 90
+            
+            logger.info(f"🎯 Moving {servo_id} to {target_angle} degrees")
+            
+            if self.demo_mode:
+                logger.info(f"DEMO: Servo {servo_id} would move to {target_angle}°")
+                self.servo_positions[servo_id] = float(target_angle)
+                self._save_positions()
+                return True
+            
+            if servo_id not in self.servos:
+                logger.error(f"❌ Servo {servo_id} not found in {list(self.servos.keys())}")
+                return False
+            
+            if not self.kit:
+                logger.error("❌ PCA9685 kit not initialized")
+                return False
+            
+            channel = self.servos[servo_id]
+            logger.info(f"🔧 Using PCA9685 channel {channel} for servo {servo_id}")
+            
+            # Configure servo for 180-degree range
+            self.kit.servo[channel].actuation_range = 180
+            try:
+                self.kit.servo[channel].set_pulse_width_range(500, 2400)
+            except:
+                pass
+            
+            # Move to 90 degrees
+            self.kit.servo[channel].angle = target_angle
+            self.servo_positions[servo_id] = float(target_angle)
+            
+            # Wait for movement to complete
+            time.sleep(0.6)
+            logger.info(f"✅ Servo {servo_id} (channel {channel}) moved to {target_angle}°")
+            
+            # Save position
+            self._save_positions()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error moving servo2 to 90°: {e}", exc_info=True)
+            return False
+    
+    def reset_servo2(self) -> bool:
+        """
+        Reset servo2 (channel 5) back to 0 degrees
+        Called after user confirms second dispense
+        """
+        try:
+            servo_id = 'servo2'
+            target_angle = 0
+            
+            logger.info(f"🔄 Resetting {servo_id} to {target_angle} degrees")
+            
+            if self.demo_mode:
+                logger.info(f"DEMO: Servo {servo_id} would reset to {target_angle}°")
+                self.servo_positions[servo_id] = float(target_angle)
+                self._save_positions()
+                return True
+            
+            if servo_id not in self.servos:
+                logger.error(f"❌ Servo {servo_id} not found")
+                return False
+            
+            if not self.kit:
+                logger.error("❌ PCA9685 kit not initialized")
+                return False
+            
+            channel = self.servos[servo_id]
+            
+            # Move to 0 degrees
+            self.kit.servo[channel].angle = target_angle
+            self.servo_positions[servo_id] = float(target_angle)
+            
+            # Wait for movement to complete
+            time.sleep(0.6)
+            logger.info(f"✅ Servo {servo_id} (channel {channel}) reset to {target_angle}°")
+            
+            # Save position
+            self._save_positions()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error resetting servo2: {e}", exc_info=True)
+            return False
 
 
 class SMSController:
@@ -331,20 +477,38 @@ async def handle_dispense(servo_id: str, medication: str) -> dict:
     """
     Handle dispense command
     Moves servo 30 degrees from current position (relative, not absolute)
+    After main servo completes, moves servo2 to 90 degrees for confirmation
     """
     try:
         logger.info(f"Dispensing {medication} via {servo_id}")
         
-        # Move servo 30 degrees from current position (relative movement)
+        # Move main servo (servo1) 30 degrees from current position (relative movement)
         success = servo_controller.dispense(servo_id)
         
         if success:
-            return {
-                "status": "success",
-                "servo_id": servo_id,
-                "medication": medication,
-                "message": f"{medication} dispensed successfully"
-            }
+            # After main servo completes, move servo2 to 90 degrees
+            logger.info("🎯 Main dispense complete, moving servo2 to 90° for confirmation")
+            servo2_success = servo_controller.move_servo2_to_90()
+            
+            if servo2_success:
+                return {
+                    "status": "success",
+                    "servo_id": servo_id,
+                    "medication": medication,
+                    "message": f"{medication} dispensed successfully",
+                    "servo2_moved": True,
+                    "requires_confirmation": True  # Frontend will show confirmation dialog
+                }
+            else:
+                # Main dispense succeeded but servo2 failed
+                return {
+                    "status": "partial_success",
+                    "servo_id": servo_id,
+                    "medication": medication,
+                    "message": f"{medication} dispensed, but secondary servo failed",
+                    "servo2_moved": False,
+                    "requires_confirmation": False
+                }
         else:
             return {
                 "status": "error",
@@ -354,6 +518,34 @@ async def handle_dispense(servo_id: str, medication: str) -> dict:
             }
     except Exception as e:
         logger.error(f"Error in handle_dispense: {e}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+
+async def handle_servo2_dispense() -> dict:
+    """
+    Handle second servo dispense confirmation
+    Resets servo2 back to 0 degrees after user confirms
+    """
+    try:
+        logger.info("✅ User confirmed second dispense, resetting servo2")
+        
+        success = servo_controller.reset_servo2()
+        
+        if success:
+            return {
+                "status": "success",
+                "message": "Second dispense completed successfully"
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Failed to complete second dispense"
+            }
+    except Exception as e:
+        logger.error(f"Error in handle_servo2_dispense: {e}")
         return {
             "status": "error",
             "message": str(e)
@@ -417,6 +609,13 @@ async def handle_client(websocket, path=None):
                     logger.info(f"🔧 PCA9685 kit: {servo_controller.kit is not None}")
                     
                     result = await handle_dispense(servo_id, medication)
+                    logger.info(f"📤 Sending result: {result}")
+                    await websocket.send(json.dumps(result))
+                    
+                elif message_type == 'servo2_dispense':
+                    # Handle second servo dispense confirmation
+                    logger.info("🎯 Servo2 dispense confirmation received")
+                    result = await handle_servo2_dispense()
                     logger.info(f"📤 Sending result: {result}")
                     await websocket.send(json.dumps(result))
                     

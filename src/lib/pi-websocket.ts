@@ -180,3 +180,45 @@ export function sendSmsViaPi(phoneNumber: string | string[], message: string): P
     }
   })
 }
+
+export function confirmServo2Dispense(): Promise<any> {
+  return new Promise((resolve, reject) => {
+    if (!ws || !connected) {
+      console.error(' Cannot confirm servo2 dispense: Not connected to Pi!')
+      reject(new Error('Not connected to Pi!'))
+      return
+    }
+
+    if (ws.readyState !== WebSocket.OPEN) {
+      console.error(' Cannot confirm servo2 dispense: WebSocket not open!')
+      reject(new Error('WebSocket not open!'))
+      return
+    }
+
+    const message = JSON.stringify({
+      type: 'servo2_dispense'
+    })
+
+    console.log('📤 Sending servo2 dispense confirmation:', message)
+    ws.send(message)
+    
+    const timeout = setTimeout(() => {
+      console.error(' Servo2 dispense timeout - no response from Pi')
+      reject(new Error('Timeout - Pi did not respond'))
+    }, 10000)
+    
+    const originalHandler = ws.onmessage
+    ws.onmessage = (event) => {
+      clearTimeout(timeout)
+      try {
+        const response = JSON.parse(event.data)
+        console.log(' Servo2 dispense response received:', response)
+        resolve(response)
+      } catch (error) {
+        console.error(' Error parsing servo2 response:', error)
+        reject(error)
+      }
+      ws!.onmessage = originalHandler
+    }
+  })
+}

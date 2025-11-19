@@ -285,3 +285,4 @@ if __name__ == "__main__":
         # Cleanup if needed
         # GPIO.cleanup()  # Only if using RPi.GPIO
 
+

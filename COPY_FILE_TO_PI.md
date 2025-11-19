@@ -187,3 +187,4 @@ python3 pi_websocket_server.py
 3. **Turn Pi back on** (or restart server)
 4. **Servo should still be at 90°** ✅ (not reset to 0°)
 
+

@@ -140,17 +140,13 @@ class ServoController:
             except:
                 pass
             
-            # Initialize servo2 position
-            if 'servo2' not in self.servo_positions:
-                self.servo_positions['servo2'] = 0.0
-                logger.info("📊 Starting servo2 at 0 degrees")
-                self.kit.servo[channel2].angle = 0
-                time.sleep(0.3)
-            else:
-                saved_angle2 = self.servo_positions['servo2']
-                logger.info(f"📊 Restoring servo2 to saved position: {saved_angle2} degrees")
-                self.kit.servo[channel2].angle = int(saved_angle2)
-                time.sleep(0.3)
+            # Initialize servo2 position - always start at 0° (optimal resting position)
+            # Servo2 should always be at 0° when not dispensing medicine
+            self.servo_positions['servo2'] = 0.0
+            logger.info("📊 Starting servo2 at 0 degrees (optimal resting position)")
+            self.kit.servo[channel2].angle = 0
+            time.sleep(0.3)
+            logger.info("✅ Servo2 initialized at 0° - ready for medicine dispense")
             
             # CRITICAL: Don't set angle on initialization!
             # Don't do: self.kit.servo[0].angle = 0  # This would reset position!
@@ -168,10 +164,33 @@ class ServoController:
                 saved_angle = self.servo_positions['servo1']
                 logger.info(f"📊 Restoring servo1 to saved position: {saved_angle} degrees")
                 logger.info(f"💡 Servo was at {saved_angle}° before Pi was turned off")
+                
+                # CRITICAL: Ensure servo is properly configured before restoring
+                # Wait a bit for PCA9685 to fully initialize
+                time.sleep(0.5)
+                
+                # Re-apply calibration before restoring position
+                self.kit.servo[4].actuation_range = 180
+                try:
+                    self.kit.servo[4].set_pulse_width_range(500, 2400)
+                    logger.info("✅ Servo calibration applied before restore")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not set pulse width: {e}")
+                
                 # Restore servo to saved position (servo resets to 0 on power loss, so we move it back)
+                logger.info(f"🎯 Moving servo from 0° to {saved_angle}° (restore after reboot)")
                 self.kit.servo[4].angle = int(saved_angle)
-                time.sleep(0.5)  # Wait for movement to complete
+                
+                # Wait longer for movement to complete (servo needs time to move from 0 to saved position)
+                wait_time = 1.0 if saved_angle >= 90 else 0.8
+                time.sleep(wait_time)
+                
+                # Verify by setting the angle again (ensures it's at correct position)
+                self.kit.servo[4].angle = int(saved_angle)
+                time.sleep(0.3)
+                
                 logger.info(f"✅ Servo1 restored to {saved_angle} degrees (from saved file)")
+                logger.info(f"✅ Physical servo should now be at {saved_angle}° (not 0°)")
             
             logger.info("✅ Servos initialized (positions maintained) - PCA9685")
             logger.info(f"✅ Available servos: {list(self.servos.keys())}")
@@ -314,15 +333,11 @@ class ServoController:
                 except Exception as e:
                     logger.warning(f"⚠️ Could not apply correction: {e}")
             
-            # If we just reached 180° (6th dispense), automatically reset to 0° immediately
+            # If we just reached 180° (6th dispense), DON'T auto-reset - wait for user confirmation
+            # Servo1 will stay at 180° until user confirms via servo2 dialog
             if new_angle >= self.MAX_ANGLE:
-                logger.info(f"🔄 Automatically resetting from {self.MAX_ANGLE}° to 0° (no need for 7th dispense)")
-                logger.info(f"📊 Moving from {new_angle}° to 0° (difference: {0 - new_angle}°)")
-                logger.info(f"🎯 Sending command: self.kit.servo[{channel}].angle = 0")
-                self.kit.servo[channel].angle = 0
-                self.servo_positions[servo_id] = 0.0
-                time.sleep(0.6)  # Wait for reset movement to complete
-                logger.info(f"✅ Servo automatically reset to 0°")
+                logger.info(f"🔄 Reached {self.MAX_ANGLE}° (6th dispense) - waiting for user confirmation")
+                logger.info(f"💡 Servo1 will stay at 180° until user confirms. Then it will reset to 0°")
             
             # Save position to file immediately (persists across reboots)
             self._save_positions()
@@ -346,17 +361,19 @@ class ServoController:
     
     def move_servo2_to_90(self) -> bool:
         """
-        Move servo2 (channel 5) to 90 degrees
+        Move servo2 (channel 5) to 90 degrees (from current position)
         Called after main servo (servo1) completes its 30-degree rotation
+        Servo2 moves 90 degrees each time, then goes back to 0 after confirmation
         """
         try:
             servo_id = 'servo2'
-            target_angle = 90
+            current_angle = self.servo_positions.get(servo_id, 0.0)
+            target_angle = 90  # Always move to 90° (from wherever it is)
             
-            logger.info(f"🎯 Moving {servo_id} to {target_angle} degrees")
+            logger.info(f"🎯 Moving {servo_id} from {current_angle}° to {target_angle} degrees")
             
             if self.demo_mode:
-                logger.info(f"DEMO: Servo {servo_id} would move to {target_angle}°")
+                logger.info(f"DEMO: Servo {servo_id} would move from {current_angle}° to {target_angle}°")
                 self.servo_positions[servo_id] = float(target_angle)
                 self._save_positions()
                 return True
@@ -399,16 +416,18 @@ class ServoController:
     def reset_servo2(self) -> bool:
         """
         Reset servo2 (channel 5) back to 0 degrees
-        Called after user confirms second dispense
+        Called after servo2 has been at 90° for 2 seconds
+        Returns servo2 to its optimal resting position (0°)
         """
         try:
             servo_id = 'servo2'
-            target_angle = 0
+            current_angle = self.servo_positions.get(servo_id, 90.0)
+            target_angle = 0  # Optimal resting position
             
-            logger.info(f"🔄 Resetting {servo_id} to {target_angle} degrees")
+            logger.info(f"🔄 Returning {servo_id} from {current_angle}° to {target_angle}° (resting position)")
             
             if self.demo_mode:
-                logger.info(f"DEMO: Servo {servo_id} would reset to {target_angle}°")
+                logger.info(f"DEMO: Servo {servo_id} would return to {target_angle}°")
                 self.servo_positions[servo_id] = float(target_angle)
                 self._save_positions()
                 return True
@@ -423,13 +442,20 @@ class ServoController:
             
             channel = self.servos[servo_id]
             
-            # Move to 0 degrees
+            # Configure servo
+            self.kit.servo[channel].actuation_range = 180
+            try:
+                self.kit.servo[channel].set_pulse_width_range(500, 2400)
+            except:
+                pass
+            
+            # Move to 0 degrees (resting position)
             self.kit.servo[channel].angle = target_angle
             self.servo_positions[servo_id] = float(target_angle)
             
             # Wait for movement to complete
             time.sleep(0.6)
-            logger.info(f"✅ Servo {servo_id} (channel {channel}) reset to {target_angle}°")
+            logger.info(f"✅ Servo {servo_id} (channel {channel}) returned to {target_angle}° (resting position)")
             
             # Save position
             self._save_positions()
@@ -476,8 +502,9 @@ sms_controller = SMSController(demo_mode=False)  # Set to True for testing
 async def handle_dispense(servo_id: str, medication: str) -> dict:
     """
     Handle dispense command
-    Moves servo 30 degrees from current position (relative, not absolute)
-    After main servo completes, moves servo2 to 90 degrees for confirmation
+    Moves servo1 30 degrees from current position (relative, not absolute)
+    After main servo completes, shows confirmation dialog for servo2 medicine dispense
+    Servo2 stays at 0° until user confirms
     """
     try:
         logger.info(f"Dispensing {medication} via {servo_id}")
@@ -486,29 +513,26 @@ async def handle_dispense(servo_id: str, medication: str) -> dict:
         success = servo_controller.dispense(servo_id)
         
         if success:
-            # After main servo completes, move servo2 to 90 degrees
-            logger.info("🎯 Main dispense complete, moving servo2 to 90° for confirmation")
-            servo2_success = servo_controller.move_servo2_to_90()
+            # Check if servo1 is at 180° (needs confirmation before resetting)
+            current_servo1_angle = servo_controller.get_position('servo1')
+            is_at_180 = current_servo1_angle and int(current_servo1_angle) >= 180
             
-            if servo2_success:
-                return {
-                    "status": "success",
-                    "servo_id": servo_id,
-                    "medication": medication,
-                    "message": f"{medication} dispensed successfully",
-                    "servo2_moved": True,
-                    "requires_confirmation": True  # Frontend will show confirmation dialog
-                }
+            if is_at_180:
+                logger.info("🔄 Servo1 is at 180° - waiting for confirmation before resetting")
+                logger.info("💊 User must confirm to reset servo1 to 0° and move servo2 to 90°")
             else:
-                # Main dispense succeeded but servo2 failed
-                return {
-                    "status": "partial_success",
-                    "servo_id": servo_id,
-                    "medication": medication,
-                    "message": f"{medication} dispensed, but secondary servo failed",
-                    "servo2_moved": False,
-                    "requires_confirmation": False
-                }
+                logger.info("🎯 Main dispense complete, showing medicine dispense confirmation dialog")
+                logger.info("💊 Servo2 will stay at 0° until user confirms")
+            
+            return {
+                "status": "success",
+                "servo_id": servo_id,
+                "medication": medication,
+                "message": f"{medication} dispensed successfully",
+                "servo2_ready": True,
+                "requires_confirmation": True,  # Frontend will show confirmation dialog
+                "servo1_at_180": is_at_180  # Flag to indicate servo1 needs reset
+            }
         else:
             return {
                 "status": "error",
@@ -526,23 +550,60 @@ async def handle_dispense(servo_id: str, medication: str) -> dict:
 
 async def handle_servo2_dispense() -> dict:
     """
-    Handle second servo dispense confirmation
-    Resets servo2 back to 0 degrees after user confirms
+    Handle servo2 medicine dispense confirmation
+    Moves servo2 from 0° to 90° (clockwise), stays for 2 seconds, then returns to 0°
+    If servo1 is at 180°, also resets servo1 to 0° after confirmation
+    Only called when user confirms "Yes" to dispense medicine
     """
     try:
-        logger.info("✅ User confirmed second dispense, resetting servo2")
+        logger.info("✅ User confirmed medicine dispense")
         
-        success = servo_controller.reset_servo2()
+        # Check if servo1 is at 180° and needs to be reset
+        current_servo1_angle = servo_controller.get_position('servo1')
+        is_at_180 = current_servo1_angle and int(current_servo1_angle) >= 180
         
-        if success:
-            return {
-                "status": "success",
-                "message": "Second dispense completed successfully"
-            }
+        if is_at_180:
+            logger.info("🔄 Servo1 is at 180° - will reset to 0° after servo2 completes")
+        
+        # Move servo2 from 0° to 90° (clockwise)
+        logger.info("🎯 Moving servo2 from 0° to 90°")
+        servo2_success = servo_controller.move_servo2_to_90()
+        
+        if servo2_success:
+            # Wait 2 seconds at 90°, then return to 0°
+            logger.info("⏱️  Servo2 at 90°, waiting 2 seconds before returning to 0°")
+            time.sleep(2.0)
+            
+            # Return servo2 to 0°
+            reset_success = servo_controller.reset_servo2()
+            
+            # If servo1 is at 180°, reset it to 0° now
+            if is_at_180:
+                logger.info("🔄 Resetting servo1 from 180° to 0° (after confirmation)")
+                channel = servo_controller.servos.get('servo1', 4)
+                if servo_controller.kit:
+                    servo_controller.kit.servo[channel].angle = 0
+                    servo_controller.servo_positions['servo1'] = 0.0
+                    time.sleep(0.6)
+                    servo_controller._save_positions()
+                    logger.info("✅ Servo1 reset to 0°")
+            
+            if reset_success:
+                return {
+                    "status": "success",
+                    "message": "Medicine dispensed successfully",
+                    "servo1_reset": is_at_180
+                }
+            else:
+                return {
+                    "status": "partial_success",
+                    "message": "Medicine dispensed but servo2 did not return to 0°",
+                    "servo1_reset": is_at_180
+                }
         else:
             return {
                 "status": "error",
-                "message": "Failed to complete second dispense"
+                "message": "Failed to dispense medicine"
             }
     except Exception as e:
         logger.error(f"Error in handle_servo2_dispense: {e}")

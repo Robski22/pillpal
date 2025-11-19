@@ -30,3 +30,4 @@ This folder contains the Python WebSocket server that runs on your Raspberry Pi.
 
 This file must run **on the Raspberry Pi**, not in VS Code. VS Code is just for editing and version control.
 
+

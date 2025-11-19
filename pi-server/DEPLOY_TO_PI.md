@@ -217,3 +217,4 @@ If your servo physically resets (hardware issue), you may need a servo with posi
 
 **The code is ready** - just deploy it to your Pi and uncomment the hardware sections. The servo will maintain its position when the Pi is turned off/on! 🎉
 
+

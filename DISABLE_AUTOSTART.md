@@ -132,3 +132,4 @@ sudo systemctl disable pillpal-server
 sudo journalctl -u pillpal-server -f
 ```
 
+

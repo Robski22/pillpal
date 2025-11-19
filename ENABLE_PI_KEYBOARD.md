@@ -190,3 +190,4 @@ Then you can type using the on-screen keyboard!
 - Use SSH from Windows computer (if SSH is enabled)
 - Use your Windows keyboard to control Pi
 
+

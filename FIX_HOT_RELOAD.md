@@ -177,3 +177,4 @@ npm run dev
 2. Open `http://localhost:3000` in browser
 3. Now when I edit files → You see changes! 🎉
 
+

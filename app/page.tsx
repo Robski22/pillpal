@@ -1992,14 +1992,14 @@ export default function Home() {
                                     className="px-2 py-1.5 sm:px-3 sm:py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 active:bg-blue-700 transition text-xs sm:text-sm font-medium shadow-sm"
                                     title="Edit medication name"
                                   >
-                                    ✏️ Edit
+                                     Edit
                                   </button>
                                   <button
                                     onClick={() => handleRemoveMedication(med.id)}
                                     className="px-2 py-1.5 sm:px-3 sm:py-2 bg-red-500 text-white rounded-md hover:bg-red-600 active:bg-red-700 transition text-xs sm:text-sm font-medium shadow-sm"
                                     title="Remove"
                                   >
-                                    ✕ Remove
+                                     Remove
                                   </button>
                                 </div>
                               </div>

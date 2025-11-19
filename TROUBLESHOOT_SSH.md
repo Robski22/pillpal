@@ -216,3 +216,4 @@ ping 192.168.1.45
 - If this works → SSH issue
 - If this fails → Network/IP issue
 
+

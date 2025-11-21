@@ -137,3 +137,5 @@ Raspberry Pi (192.168.1.45)
 **This is why your old setup worked and new one doesn't - you need to reconnect Remote SSH!**
 
 
+
+

@@ -180,3 +180,5 @@ ls -la /etc/systemd/system/ | grep -i websocket
 
 Run `sudo systemctl status <service-name>` for each to check if they exist and are enabled.
 
+
+

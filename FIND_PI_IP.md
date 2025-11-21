@@ -202,3 +202,5 @@ ssh pi@NEW_IP_ADDRESS
 Now Pi will always be at `192.168.100.100` (or whatever IP you set).
 
 
+
+

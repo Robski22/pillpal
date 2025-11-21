@@ -21,24 +21,95 @@ export default function HistoryPage() {
   const [items, setItems] = useState<HistoryItem[]>([])
   const [filter, setFilter] = useState({ action: 'all', status: 'all', servo: 'all' })
   const [fetching, setFetching] = useState(false)
+  const [ownerUserId, setOwnerUserId] = useState<string | null>(null)
+  const [isOwner, setIsOwner] = useState(true)
+
+  // Resolve owner/caregiver status (same logic as main dashboard)
+  const resolveOwner = async (): Promise<{ ownerUserId: string; isOwner: boolean } | null> => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.user) return null
+      
+      const currentUserId = session.user.id
+      
+      // Check if user is owner or caregiver
+      const { data: memberData, error: memberError } = await supabase
+        .from('account_members')
+        .select('owner_user_id, status')
+        .eq('member_user_id', currentUserId)
+        .maybeSingle()
+
+      if (memberError && memberError.code !== 'PGRST116') {
+        console.error('Error querying account_members:', memberError)
+        // Fall through to assume owner
+      } else if (memberData && memberData.owner_user_id && memberData.status === 'accepted') {
+        // User is an accepted caregiver
+        const result = {
+          ownerUserId: memberData.owner_user_id,
+          isOwner: false
+        }
+        setOwnerUserId(result.ownerUserId)
+        setIsOwner(result.isOwner)
+        return result
+      }
+
+      // Default: user is an owner
+      const result = {
+        ownerUserId: currentUserId,
+        isOwner: true
+      }
+      setOwnerUserId(result.ownerUserId)
+      setIsOwner(result.isOwner)
+      return result
+    } catch (e: any) {
+      console.error('resolveOwner error:', e)
+      // On error, assume user is owner
+      const { data: { session } } = await supabase.auth.getSession()
+      if (session?.user) {
+        const result = {
+          ownerUserId: session.user.id,
+          isOwner: true
+        }
+        setOwnerUserId(result.ownerUserId)
+        setIsOwner(result.isOwner)
+        return result
+      }
+      return null
+    }
+  }
 
   useEffect(() => {
     if (!loading && !user) router.push('/login')
   }, [loading, user, router])
 
   useEffect(() => {
-    if (user) fetchHistory()
+    if (user) {
+      resolveOwner().then(() => {
+        fetchHistory()
+      })
+    }
   }, [user])
+
+  // Refetch history when ownerUserId changes
+  useEffect(() => {
+    if (ownerUserId) {
+      fetchHistory()
+    }
+  }, [ownerUserId])
 
   const fetchHistory = async () => {
     try {
       setFetching(true)
       const { data: { session } } = await supabase.auth.getSession()
       if (!session?.user) return
+      
+      // Use owner's user_id for history (caregivers see owner's history)
+      const effectiveUserId = ownerUserId || session.user.id
+      
       const { data, error } = await supabase
         .from('dispense_history')
         .select('*')
-        .eq('user_id', session.user.id)
+        .eq('user_id', effectiveUserId)
         .order('created_at', { ascending: false })
         .limit(200)
       if (error) throw error

@@ -146,3 +146,5 @@ pkill -9 -f "websocket.*8765"
 sudo lsof -i :8765 || echo "✅ Port is free!"
 ```
 
+
+

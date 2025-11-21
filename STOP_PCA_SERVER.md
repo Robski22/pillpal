@@ -98,3 +98,5 @@ sudo systemctl stop pillpal-server
 3. **Edit:** `nano /home/justin/pillpal/pi_websocket_server.py`
 4. **Restart:** `python3 /home/justin/pillpal/pi_websocket_server.py`
 
+
+

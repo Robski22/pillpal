@@ -165,3 +165,5 @@ nohup python3 /home/justin/pillpal/pi_websocket_server.py > server.log 2>&1 &
 tail -f server.log
 ```
 
+
+

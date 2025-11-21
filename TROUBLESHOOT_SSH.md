@@ -217,3 +217,5 @@ ping 192.168.1.45
 - If this fails → Network/IP issue
 
 
+
+

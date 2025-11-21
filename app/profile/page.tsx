@@ -934,7 +934,7 @@ export default function Profile() {
       alert(` Invitation accepted! You can now access ${ownerEmail}'s PillPal system.\n\nRedirecting to dashboard...`)
       
       // Force a hard refresh to ensure state is synced (using window.location)
-      // This ensures the page.tsx resolveOwner runs with fresh data
+      // This ensures the page.tsx resolveOwner runs with fresh data and fetches owner's data
       setTimeout(() => {
         window.location.href = '/'
       }, 500)
@@ -1004,6 +1004,56 @@ export default function Profile() {
     }
   }
 
+  const handleLeaveCaregiverRole = async () => {
+    const confirmMessage = `Leave caregiver role?\n\nYou will lose access to ${currentAccountEmail || 'this account'}'s PillPal system immediately.\n\nYou will be redirected to your own account.\n\nClick OK to confirm, Cancel to abort.`
+    
+    if (!confirm(confirmMessage)) {
+      return
+    }
+
+    try {
+      // Refresh session first
+      const session = await refreshSessionIfNeeded()
+      if (!session) return
+
+      const currentUserId = session.user.id
+
+      // Find and delete the caregiver relationship where this user is the member
+      const { data: relationship, error: findError } = await supabase
+        .from('account_members')
+        .select('id, owner_user_id')
+        .eq('member_user_id', currentUserId)
+        .eq('status', 'accepted')
+        .maybeSingle()
+
+      if (findError) throw findError
+
+      if (!relationship) {
+        alert(' No active caregiver relationship found.')
+        return
+      }
+
+      // Delete the caregiver relationship
+      const { error: deleteError } = await supabase
+        .from('account_members')
+        .delete()
+        .eq('id', relationship.id)
+        .eq('member_user_id', currentUserId) // Ensure user can only delete their own caregiver role
+
+      if (deleteError) throw deleteError
+
+      alert(` You have left the caregiver role.\n\nRedirecting to your own account...`)
+      
+      // Force a hard refresh to reset to owner mode
+      setTimeout(() => {
+        window.location.href = '/'
+      }, 500)
+    } catch (error: any) {
+      console.error('Error leaving caregiver role:', error)
+      alert(` Error: ${error.message || 'Failed to leave caregiver role'}`)
+    }
+  }
+
   const fetchProfile = async () => {
     try {
       const { data, error } = await supabase
@@ -1030,6 +1080,28 @@ export default function Profile() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    
+    // Validate required fields
+    if (!profile.full_name.trim()) {
+      alert('⚠️ Please enter your Full Name before saving.')
+      return
+    }
+    
+    // For owners: phone number is recommended but not blocking (dispensing still works)
+    // For caregivers: phone number is required
+    if (!isOwner && !profile.phone_number.trim()) {
+      alert('⚠️ Please enter your Personal Contact before saving.')
+      return
+    }
+    
+    // For owners: show warning if phone number is missing but allow save
+    if (isOwner && !profile.phone_number.trim()) {
+      const proceed = confirm('⚠️ Warning: You have not entered a phone number.\n\nSMS notifications will not work, but dispensing will still function normally.\n\nDo you want to continue saving without a phone number?')
+      if (!proceed) {
+        return
+      }
+    }
+    
     setSaving(true)
 
     try {
@@ -1143,48 +1215,194 @@ export default function Profile() {
             )}
           </div>
           
+          {/* Warning Banner if Required Fields Missing */}
+          {isOwner && (!profile.full_name.trim() || !profile.phone_number.trim()) && (
+            <div className="mb-6 p-4 bg-yellow-50 border-l-4 border-yellow-400 rounded-lg">
+              <div className="flex items-start">
+                <div className="flex-shrink-0">
+                  <svg className="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                  </svg>
+                </div>
+                <div className="ml-3">
+                  <h3 className="text-sm font-medium text-yellow-800">
+                    Please complete your profile information
+                  </h3>
+                  <div className="mt-2 text-sm text-yellow-700">
+                    <ul className="list-disc list-inside space-y-1">
+                      {!profile.full_name.trim() && (
+                        <li>Full Name is required</li>
+                      )}
+                      {!profile.phone_number.trim() && (
+                        <li>Phone Number is recommended for SMS notifications (dispensing will still work without it)</li>
+                      )}
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Warning Banner for Caregivers */}
+          {!isOwner && (!profile.full_name.trim() || !profile.phone_number.trim()) && (
+            <div className="mb-6 p-4 bg-yellow-50 border-l-4 border-yellow-400 rounded-lg">
+              <div className="flex items-start">
+                <div className="flex-shrink-0">
+                  <svg className="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                  </svg>
+                </div>
+                <div className="ml-3">
+                  <h3 className="text-sm font-medium text-yellow-800">
+                    Please complete your caregiver information
+                  </h3>
+                  <div className="mt-2 text-sm text-yellow-700">
+                    <ul className="list-disc list-inside space-y-1">
+                      {!profile.full_name.trim() && (
+                        <li>Full Name is required</li>
+                      )}
+                      {!profile.phone_number.trim() && (
+                        <li>Personal Contact is required</li>
+                      )}
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           <form onSubmit={handleSubmit} className="space-y-6">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Full Name
-              </label>
-              <input
-                type="text"
-                value={profile.full_name}
-                onChange={(e) => setProfile({ ...profile, full_name: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                placeholder="Enter your full name"
-              />
-            </div>
+            {isOwner ? (
+              <>
+                {/* Patient/Owner Fields */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Full Name <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={profile.full_name}
+                    onChange={(e) => setProfile({ ...profile, full_name: e.target.value })}
+                    className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                      !profile.full_name.trim() 
+                        ? 'border-red-300 bg-red-50' 
+                        : 'border-gray-300'
+                    }`}
+                    placeholder="Enter your full name"
+                  />
+                  {!profile.full_name.trim() && (
+                    <p className="mt-1 text-sm text-red-600 flex items-center gap-1">
+                      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                      </svg>
+                      Full Name is required
+                    </p>
+                  )}
+                </div>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Phone Number (for notifications)
-              </label>
-              <input
-                type="tel"
-                value={profile.phone_number}
-                onChange={(e) => setProfile({ ...profile, phone_number: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                placeholder="09171234567"
-              />
-              <p className="text-sm text-gray-500 mt-1">
-                Add your phone number to receive medication reminders via SMS
-              </p>
-            </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Phone Number (for notifications) <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="tel"
+                    value={profile.phone_number}
+                    onChange={(e) => setProfile({ ...profile, phone_number: e.target.value })}
+                    className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                      !profile.phone_number.trim() 
+                        ? 'border-yellow-300 bg-yellow-50' 
+                        : 'border-gray-300'
+                    }`}
+                    placeholder="09171234567"
+                  />
+                  {!profile.phone_number.trim() ? (
+                    <p className="mt-1 text-sm text-yellow-600 flex items-center gap-1">
+                      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                      </svg>
+                      Warning: SMS notifications will not work without a phone number. Dispensing will still function normally.
+                    </p>
+                  ) : (
+                    <p className="text-sm text-gray-500 mt-1">
+                      Add your phone number to receive medication reminders via SMS
+                    </p>
+                  )}
+                </div>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Emergency Contact
-              </label>
-              <input
-                type="text"
-                value={profile.emergency_contact}
-                onChange={(e) => setProfile({ ...profile, emergency_contact: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                placeholder="Emergency contact name and number"
-              />
-            </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Emergency Contact Number
+                  </label>
+                  <input
+                    type="tel"
+                    value={profile.emergency_contact}
+                    onChange={(e) => setProfile({ ...profile, emergency_contact: e.target.value })}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="09171234567"
+                  />
+                  <p className="text-sm text-gray-500 mt-1">
+                    Emergency contact phone number only
+                  </p>
+                </div>
+              </>
+            ) : (
+              <>
+                {/* Caregiver Fields */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Full Name <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={profile.full_name}
+                    onChange={(e) => setProfile({ ...profile, full_name: e.target.value })}
+                    className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                      !profile.full_name.trim() 
+                        ? 'border-red-300 bg-red-50' 
+                        : 'border-gray-300'
+                    }`}
+                    placeholder="Enter your full name"
+                  />
+                  {!profile.full_name.trim() && (
+                    <p className="mt-1 text-sm text-red-600 flex items-center gap-1">
+                      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                      </svg>
+                      Full Name is required
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Personal Contact <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="tel"
+                    value={profile.phone_number}
+                    onChange={(e) => setProfile({ ...profile, phone_number: e.target.value })}
+                    className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                      !profile.phone_number.trim() 
+                        ? 'border-red-300 bg-red-50' 
+                        : 'border-gray-300'
+                    }`}
+                    placeholder="09171234567"
+                  />
+                  {!profile.phone_number.trim() ? (
+                    <p className="mt-1 text-sm text-red-600 flex items-center gap-1">
+                      <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                      </svg>
+                      Personal Contact is required
+                    </p>
+                  ) : (
+                    <p className="text-sm text-gray-500 mt-1">
+                      Your personal contact number for SMS notifications
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
 
             <button
               type="submit"
@@ -1218,22 +1436,20 @@ export default function Profile() {
                   </button>
                   <button
                     onClick={() => setShowCaregiverForm(!showCaregiverForm)}
-                    disabled={acceptedCaregivers.length >= 1}
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
                   >
-                    {showCaregiverForm ? 'Cancel' : acceptedCaregivers.length >= 1 ? 'Max Caregiver Added' : ' Add Caregiver'}
+                    {showCaregiverForm ? 'Cancel' : '+ Add Caregiver'}
                   </button>
                 </div>
               </div>
 
-              {showCaregiverForm && acceptedCaregivers.length < 1 && (
+              {showCaregiverForm && (
               <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Caregiver Email
                 </label>
                 <p className="text-xs text-gray-500 mb-3">
-                  They must have signed up first. Enter their exact email address.<br/>
-                  <span className="font-medium text-orange-600"> Only ONE caregiver allowed per account.</span>
+                  They must have signed up first. Enter their exact email address.
                 </p>
                 <div className="flex gap-2">
                   <input
@@ -1242,12 +1458,10 @@ export default function Profile() {
                     onChange={(e) => setCaregiverEmail(e.target.value)}
                     placeholder="caregiver@example.com"
                     className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    disabled={acceptedCaregivers.length >= 1}
                   />
                   <button
                     onClick={handleInviteCaregiver}
-                    disabled={acceptedCaregivers.length >= 1}
-                    className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+                    className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
                   >
                     Add
                   </button>
@@ -1255,13 +1469,6 @@ export default function Profile() {
               </div>
             )}
 
-            {showCaregiverForm && acceptedCaregivers.length >= 1 && (
-              <div className="mb-6 p-4 bg-orange-50 rounded-lg border border-orange-200">
-                <p className="text-sm text-orange-800">
-                   <strong>Maximum limit reached:</strong> You already have 1 accepted caregiver. Please remove the existing caregiver before adding a new one.
-                </p>
-              </div>
-            )}
 
             {caregivers.length > 0 ? (
               <div className="space-y-3">
@@ -1364,15 +1571,30 @@ export default function Profile() {
           </div>
         )}
 
-        {/* Caregiver Notice */}
+        {/* Caregiver Notice and Self-Removal */}
         {!isOwner && (
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 mt-6">
-            <p className="text-blue-800 font-medium">
-              👤 You are viewing this account as a caregiver
-            </p>
-            <p className="text-blue-600 text-sm mt-2">
-              You have access to manage medications, schedules, and dispensing.
-            </p>
+            <div className="flex justify-between items-start">
+              <div>
+                <p className="text-blue-800 font-medium">
+                  👤 You are viewing this account as a caregiver
+                </p>
+                <p className="text-blue-600 text-sm mt-2">
+                  You have access to manage medications, schedules, and dispensing.
+                </p>
+                {currentAccountEmail && (
+                  <p className="text-blue-600 text-sm mt-1">
+                    Caring for: <strong>{currentAccountEmail}</strong>
+                  </p>
+                )}
+              </div>
+              <button
+                onClick={handleLeaveCaregiverRole}
+                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors text-sm font-medium whitespace-nowrap"
+              >
+                Leave Caregiver Role
+              </button>
+            </div>
           </div>
         )}
       </div>

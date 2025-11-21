@@ -89,3 +89,5 @@ grep -n "//" /home/justin/pillpal/pi_websocket_server.py
 
 You probably accidentally pasted some JavaScript/TypeScript code from `page.tsx` into the Python file. Make sure you're only copying Python code!
 
+
+

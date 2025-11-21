@@ -71,3 +71,5 @@ If you want to edit manually, find this section in `/home/justin/pillpal/pi_webs
    python3 pi_websocket_server.py
    ```
 
+
+

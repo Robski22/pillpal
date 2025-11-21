@@ -4,7 +4,7 @@ import { useAuth } from '../src/contexts/AuthContext'
 import { useRouter } from 'next/navigation'
 import { useEffect, useState, useRef } from 'react'
 import { supabase } from '../src/lib/supabase'
-import { connectToPi, disconnectFromPi, isConnectedToPi, dispenseToPi, sendSmsViaPi, confirmServo2Dispense } from '../src/lib/pi-websocket'
+import { connectToPi, disconnectFromPi, isConnectedToPi, dispenseToPi, sendSmsViaPi, confirmServo2Dispense, setButtonPressCallback, updateLCDSchedules } from '../src/lib/pi-websocket'
 import { formatDate, getPhilippineTime } from '../src/lib/date-utils'
 
 interface Medication {
@@ -15,7 +15,7 @@ interface Medication {
 }
 
 interface DayData {
-  dayOfWeek: number // 6 = Saturday, 0 = Sunday (for UI labels only)
+  dayOfWeek: number // 6 = Saturday, 0 = Sunday
   name: string // "Saturday" or "Sunday"
   selectedDate: string | null // Selected date in YYYY-MM-DD format (null = not set)
   medications: {
@@ -36,9 +36,9 @@ interface DayData {
 
 // Time frame definitions
 const TIME_FRAMES = {
-  morning: { label: 'Morning', start: '05:00', end: '12:00', default: '08:00' },
-  afternoon: { label: 'Afternoon', start: '12:01', end: '19:00', default: '14:00' },
-  evening: { label: 'Evening', start: '19:01', end: '03:00', default: '21:00' }
+  morning: { label: 'Morning', start: '04:00', end: '10:00', default: '07:00' },
+  afternoon: { label: 'Afternoon', start: '10:05', end: '16:00', default: '13:00' },
+  evening: { label: 'Evening', start: '16:05', end: '00:00', default: '20:00' }
 }
 
 // Helper function to get day name from dayOfWeek (0 = Sunday, 1 = Monday, ..., 6 = Saturday)
@@ -58,24 +58,194 @@ const getNextDayDate = (dayOfWeek: number): Date => {
   return nextDate
 }
 
+// Map time frame to target angle
+// Each time frame has a specific angle it should move to
+const getAngleForTimeFrame = (dayOfWeek: number, timeFrame: 'morning' | 'afternoon' | 'evening'): number => {
+  // Saturday (dayOfWeek = 6)
+  if (dayOfWeek === 6) {
+    if (timeFrame === 'morning') return 30
+    if (timeFrame === 'afternoon') return 60
+    if (timeFrame === 'evening') return 90
+  }
+  // Sunday (dayOfWeek = 0)
+  if (dayOfWeek === 0) {
+    if (timeFrame === 'morning') return 120
+    if (timeFrame === 'afternoon') return 150
+    if (timeFrame === 'evening') return 180
+  }
+  return 0 // Default (shouldn't happen)
+}
+
+// Map servo1 angle to day and time frame (for checking if already dispensed)
+const getTimeFrameFromAngle = (angle: number): { dayOfWeek: number; timeFrame: 'morning' | 'afternoon' | 'evening' } | null => {
+  const angleInt = Math.round(angle)
+  
+  // Map angles to time frames:
+  // 30° = Saturday morning
+  // 60° = Saturday afternoon
+  // 90° = Saturday evening
+  // 120° = Sunday morning
+  // 150° = Sunday afternoon
+  // 180° = Sunday evening
+  
+  if (angleInt >= 30 && angleInt < 60) {
+    return { dayOfWeek: 6, timeFrame: 'morning' } // Saturday morning
+  } else if (angleInt >= 60 && angleInt < 90) {
+    return { dayOfWeek: 6, timeFrame: 'afternoon' } // Saturday afternoon
+  } else if (angleInt >= 90 && angleInt < 120) {
+    return { dayOfWeek: 6, timeFrame: 'evening' } // Saturday evening
+  } else if (angleInt >= 120 && angleInt < 150) {
+    return { dayOfWeek: 0, timeFrame: 'morning' } // Sunday morning
+  } else if (angleInt >= 150 && angleInt < 180) {
+    return { dayOfWeek: 0, timeFrame: 'afternoon' } // Sunday afternoon
+  } else if (angleInt >= 180) {
+    return { dayOfWeek: 0, timeFrame: 'evening' } // Sunday evening
+  }
+  
+  return null // At 0° or invalid angle
+}
+
+// Check if a time frame has already been dispensed based on current angle
+const isTimeFrameDispensedByAngle = (currentAngle: number | null, dayOfWeek: number, timeFrame: 'morning' | 'afternoon' | 'evening'): boolean => {
+  if (currentAngle === null) return false
+  
+  const targetAngle = getAngleForTimeFrame(dayOfWeek, timeFrame)
+  const angleInt = Math.round(currentAngle)
+  
+  // Check if current angle indicates this time frame has been dispensed
+  // If servo is at or past the target angle for this time frame, it's been dispensed
+  if (dayOfWeek === 6) { // Saturday
+    if (timeFrame === 'morning' && angleInt >= 30) return true
+    if (timeFrame === 'afternoon' && angleInt >= 60) return true
+    if (timeFrame === 'evening' && angleInt >= 90) return true
+  } else if (dayOfWeek === 0) { // Sunday
+    if (timeFrame === 'morning' && angleInt >= 120) return true
+    if (timeFrame === 'afternoon' && angleInt >= 150) return true
+    if (timeFrame === 'evening' && angleInt >= 180) return true
+  }
+  
+  return false
+}
+
+// Check if there are earlier time frames with scheduled times that haven't been dispensed
+// Progressive dispense logic: can't dispense later time frames if earlier ones with schedules haven't been dispensed
+const hasUndispensedEarlierTimeFrames = (
+  day: DayData,
+  targetTimeFrame: 'morning' | 'afternoon' | 'evening',
+  currentAngle: number | null
+): boolean => {
+  const frameOrder: ('morning' | 'afternoon' | 'evening')[] = ['morning', 'afternoon', 'evening']
+  const targetIndex = frameOrder.indexOf(targetTimeFrame)
+  
+  // Check all earlier time frames
+  for (let i = 0; i < targetIndex; i++) {
+    const earlierFrame = frameOrder[i]
+    const hasMedications = (day.medications[earlierFrame] || []).length > 0
+    const hasScheduledTime = day.timeFrameTimes[earlierFrame] !== null && day.timeFrameTimes[earlierFrame] !== ''
+    
+    // If this earlier time frame has both medications AND scheduled time, it must be dispensed first
+    if (hasMedications && hasScheduledTime) {
+      // Check if it's been dispensed by checking if servo angle is at or past this time frame's angle
+      if (!isTimeFrameDispensedByAngle(currentAngle, day.dayOfWeek, earlierFrame)) {
+        return true // Found an earlier time frame that needs to be dispensed first
+      }
+    }
+  }
+  
+  return false // All earlier time frames with schedules have been dispensed (or don't exist)
+}
+
+
+// Check if a date matches today's date
+const isDateToday = (selectedDate: string | null): boolean => {
+  if (!selectedDate) return false
+  
+  const now = getPhilippineTime()
+  const today = new Date(now)
+  today.setHours(0, 0, 0, 0)
+  
+  const selected = new Date(selectedDate)
+  selected.setHours(0, 0, 0, 0)
+  
+  return selected.getTime() === today.getTime()
+}
+
 export default function Home() {
   const { user, loading, signOut } = useAuth()
   const router = useRouter()
   const [piConnected, setPiConnected] = useState(false)
   const [ownerUserId, setOwnerUserId] = useState<string | null>(null)
   const [isOwner, setIsOwner] = useState(true)
-  // Saturday (dayOfWeek = 6) and Sunday (dayOfWeek = 0) - UI labels only
-  // Users can set any date for each day - no day restrictions
+  // Saturday (dayOfWeek = 6) and Sunday (dayOfWeek = 0) - synced with current date
   // All use servo1 (spins 30 degrees each time)
   const [days, setDays] = useState<DayData[]>(() => {
-    // Initialize with selectedDate from localStorage if available
-    const saturdayDate = typeof window !== 'undefined' ? localStorage.getItem('pillpal_selectedDate_6') : null
-    const sundayDate = typeof window !== 'undefined' ? localStorage.getItem('pillpal_selectedDate_0') : null
+    if (typeof window === 'undefined') {
+      return [
+        { 
+          dayOfWeek: 6, 
+          name: 'Saturday', 
+          selectedDate: null,
+          medications: { morning: [], afternoon: [], evening: [] },
+          timeFrameTimes: { morning: null, afternoon: null, evening: null },
+          status: 'ready', 
+          servoNumber: 1,
+          dispensedTimeFrames: []
+        },
+        { 
+          dayOfWeek: 0, 
+          name: 'Sunday', 
+          selectedDate: null,
+          medications: { morning: [], afternoon: [], evening: [] },
+          timeFrameTimes: { morning: null, afternoon: null, evening: null },
+          status: 'ready', 
+          servoNumber: 1,
+          dispensedTimeFrames: []
+        }
+      ]
+    }
+    
+    // Sync with current date - if today is Saturday, set Saturday to today and Sunday to tomorrow
+    const now = getPhilippineTime()
+    const currentDayOfWeek = now.getDay() // 0 = Sunday, 6 = Saturday
+    const currentDate = new Date(now)
+    currentDate.setHours(0, 0, 0, 0)
+    
+    // Calculate Saturday and Sunday dates
+    let saturdayDate: Date
+    let sundayDate: Date
+    
+    if (currentDayOfWeek === 6) { // Today is Saturday
+      saturdayDate = new Date(currentDate)
+      sundayDate = new Date(currentDate)
+      sundayDate.setDate(currentDate.getDate() + 1)
+    } else if (currentDayOfWeek === 0) { // Today is Sunday
+      saturdayDate = new Date(currentDate)
+      saturdayDate.setDate(currentDate.getDate() - 1)
+      sundayDate = new Date(currentDate)
+    } else { // Other day - find next Saturday and Sunday
+      const daysUntilSaturday = (6 - currentDayOfWeek + 7) % 7 || 7
+      saturdayDate = new Date(currentDate)
+      saturdayDate.setDate(currentDate.getDate() + daysUntilSaturday)
+      sundayDate = new Date(saturdayDate)
+      sundayDate.setDate(saturdayDate.getDate() + 1)
+    }
+    
+    // Format dates as YYYY-MM-DD
+    const formatDate = (date: Date): string => {
+      const year = date.getFullYear()
+      const month = String(date.getMonth() + 1).padStart(2, '0')
+      const day = String(date.getDate()).padStart(2, '0')
+      return `${year}-${month}-${day}`
+    }
+    
+    // Don't load dates in initial state - let fetchDayDataWithUserId handle it
+    // This ensures we use the correct keys (owner-specific for caregivers)
+    // Dates will be set when fetchDayDataWithUserId runs after ownerUserId is resolved
     return [
       { 
         dayOfWeek: 6, 
         name: 'Saturday', 
-        selectedDate: saturdayDate,
+        selectedDate: null, // Will be set by fetchDayDataWithUserId
         medications: { morning: [], afternoon: [], evening: [] },
         timeFrameTimes: { morning: null, afternoon: null, evening: null },
         status: 'ready', 
@@ -85,7 +255,7 @@ export default function Home() {
       { 
         dayOfWeek: 0, 
         name: 'Sunday', 
-        selectedDate: sundayDate,
+        selectedDate: null, // Will be set by fetchDayDataWithUserId
         medications: { morning: [], afternoon: [], evening: [] },
         timeFrameTimes: { morning: null, afternoon: null, evening: null },
         status: 'ready', 
@@ -105,10 +275,24 @@ export default function Home() {
   const [timeFrameTime, setTimeFrameTime] = useState('')
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' | 'info' | 'warning' } | null>(null)
   const [confirmDialog, setConfirmDialog] = useState<{ message: string; onConfirm: () => void; onCancel: () => void } | null>(null)
-  const [servo2ConfirmDialog, setServo2ConfirmDialog] = useState<{ onConfirm: () => void; onCancel: () => void; isAt180?: boolean } | null>(null)
-  const servo2DialogTimeoutRef = useRef<NodeJS.Timeout | null>(null)
-  const servo2DialogReopenTimeoutRef = useRef<NodeJS.Timeout | null>(null)
-  const servo2DialogConfigRef = useRef<{ onConfirm: () => void; onCancel: () => void; isAt180?: boolean } | null>(null)
+  const [servo2ConfirmDialog, setServo2ConfirmDialog] = useState<{ onConfirm: () => void; onCancel: () => void; isAt180?: boolean; date?: string; time?: string; timeFrame?: string } | null>(null)
+  const [servo2DialogState, setServo2DialogState] = useState<{
+    lastChoice: 'yes' | 'no' | null
+    noCount: number
+    showAfterNextDispense: boolean
+  }>({
+    lastChoice: null,
+    noCount: 0,
+    showAfterNextDispense: true
+  })
+  const servo2NoTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const servo2ProcessingRef = useRef<boolean>(false) // Prevent double-trigger
+  const [lastServo1Angle, setLastServo1Angle] = useState<number | null>(null) // Track last known servo1 angle
+  const holdTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map()) // Track button hold timers per button
+  const holdCompletedRef = useRef<Set<string>>(new Set()) // Track which buttons completed hold
+  const physicalButtonHoldTimerRef = useRef<NodeJS.Timeout | null>(null) // Track physical button (GPIO26) hold timer
+  const physicalButtonHoldStartRef = useRef<number | null>(null) // Track when physical button hold started
+  const daysRef = useRef<DayData[]>([]) // Keep latest days state in ref to avoid closure issues
   // Caregiver access disabled temporarily to fix signup
 
   // Helper function to show notifications
@@ -117,33 +301,115 @@ export default function Home() {
     setTimeout(() => setNotification(null), 4000)
   }
   
-  // Helper function to setup auto-close/reopen cycle for servo2 dialog
-  const setupServo2DialogAutoCycle = () => {
-    // Clear any existing timeouts
-    if (servo2DialogTimeoutRef.current) {
-      clearTimeout(servo2DialogTimeoutRef.current)
+  // Helper function to create servo2 dialog config
+  const createServo2DialogConfig = (isAt180: boolean, onServo2Complete: () => void, date?: string, time?: string, timeFrame?: string) => {
+    return {
+      isAt180: isAt180,
+      date: date,
+      time: time,
+      timeFrame: timeFrame,
+      onConfirm: async () => {
+        // Prevent double-trigger
+        if (servo2ProcessingRef.current) {
+          console.log('⚠️ Servo2 action already in progress - ignoring duplicate trigger')
+          return
+        }
+        
+        servo2ProcessingRef.current = true
+        console.log('✅ User clicked YES (or button pressed)')
+        
+        // Close dialog immediately to prevent double-trigger
+        handleServo2DialogChoice('yes')
+        setServo2ConfirmDialog(null)
+        
+        try {
+          const servo2Response = await confirmServo2Dispense(date, time, timeFrame)
+          if (servo2Response?.status === 'success') {
+            if (isAt180 && servo2Response?.servo1_reset) {
+              // Servo1 reset to 0° - reset angle tracking so all buttons become enabled again
+              setLastServo1Angle(0)
+              showNotification('Medicine dispensed! App reset - ready for next cycle.', 'success')
+            } else {
+              showNotification('Medicine dispensed successfully!', 'success')
+            }
+          } else {
+            showNotification('Medicine dispense failed', 'error')
+          }
+        } catch (error: any) {
+          console.error('❌ Error:', error)
+          showNotification(`Error: ${error.message || 'Failed'}`, 'error')
+        } finally {
+          // Reset processing flag after completion
+          servo2ProcessingRef.current = false
+        }
+        onServo2Complete()
+      },
+      onCancel: () => {
+        console.log('❌ User clicked NO')
+        handleServo2DialogChoice('no')
+        setServo2ConfirmDialog(null)
+        if (isAt180) {
+          showNotification('Cancelled. Servo1 will stay at 180° and Servo2 will not move.', 'info')
+        } else {
+          showNotification('Medicine dispense cancelled', 'info')
+        }
+      }
     }
-    if (servo2DialogReopenTimeoutRef.current) {
-      clearTimeout(servo2DialogReopenTimeoutRef.current)
+  }
+
+  // Helper function to handle servo2 dialog user choice
+  const handleServo2DialogChoice = (choice: 'yes' | 'no') => {
+    console.log(`✅ User chose: ${choice}`)
+    
+    // Clear any existing NO timeout
+    if (servo2NoTimeoutRef.current) {
+      clearTimeout(servo2NoTimeoutRef.current)
+      servo2NoTimeoutRef.current = null
     }
     
-    // Auto-close after 2 minutes
-    servo2DialogTimeoutRef.current = setTimeout(() => {
-      console.log('⏱️ Dialog auto-closing after 2 minutes')
-      setServo2ConfirmDialog(null)
-      servo2DialogTimeoutRef.current = null
+    if (choice === 'yes') {
+      // YES: Show dialog after next dispense
+      setServo2DialogState({
+        lastChoice: 'yes',
+        noCount: 0,
+        showAfterNextDispense: true
+      })
+      console.log('✅ Next dialog will appear after next dispense')
+    } else {
+      // NO: Check if this is the second NO
+      const newNoCount = servo2DialogState.noCount + 1
       
-      // Auto-reopen after 3 minutes total (1 minute after closing)
-      servo2DialogReopenTimeoutRef.current = setTimeout(() => {
-        console.log('⏱️ Dialog auto-reopening after 3 minutes total')
-        if (servo2DialogConfigRef.current) {
-          setServo2ConfirmDialog(servo2DialogConfigRef.current)
-          // Continue the cycle
-          setupServo2DialogAutoCycle()
-        }
-        servo2DialogReopenTimeoutRef.current = null
-      }, 1 * 60 * 1000) // 1 minute after closing (3 minutes total from when dialog first appeared)
-    }, 2 * 60 * 1000) // 2 minutes
+      if (newNoCount >= 2) {
+        // Second NO: Wait for next dispense
+        setServo2DialogState({
+          lastChoice: 'no',
+          noCount: 0, // Reset count
+          showAfterNextDispense: true
+        })
+        console.log('❌ Second NO - waiting for next dispense before showing dialog again')
+      } else {
+        // First NO: Show again after 1 minute
+        setServo2DialogState({
+          lastChoice: 'no',
+          noCount: newNoCount,
+          showAfterNextDispense: false
+        })
+        console.log('❌ First NO - showing dialog again after 1 minute')
+        
+        // Store current dialog config for reopening
+        const currentDialog = servo2ConfirmDialog
+        
+        // Set timeout to show dialog again after 1 minute
+        servo2NoTimeoutRef.current = setTimeout(() => {
+          console.log('⏱️ 1 minute passed - showing dialog again')
+          // Recreate the dialog with same config
+          if (currentDialog) {
+            setServo2ConfirmDialog(currentDialog)
+          }
+          servo2NoTimeoutRef.current = null
+        }, 60 * 1000) // 1 minute
+      }
+    }
   }
 
   // Helper function to show confirm dialog
@@ -193,11 +459,254 @@ export default function Home() {
 
     return () => {
       disconnectFromPi()
+      setButtonPressCallback(null)
     }
   }, [])
 
+  // Listen for button press events (GPIO26)
+  useEffect(() => {
+    console.log('🔧 Setting up GPIO26 button press handler')
+    console.log('🔍 Current dialog state when setting up:', servo2ConfirmDialog ? 'OPEN' : 'CLOSED')
+    
+    // Debounce timer for button presses
+    let buttonPressTimeout: NodeJS.Timeout | null = null
+    
+    const handleButtonPress = (pressed: boolean) => {
+      console.log('🔘 handleButtonPress called with pressed:', pressed)
+      if (pressed) {
+        // Record when button was pressed (for hold detection)
+        physicalButtonHoldStartRef.current = Date.now()
+        console.log('🔘 GPIO26 button pressed - starting hold timer')
+        
+        // Clear any existing hold timer
+        if (physicalButtonHoldTimerRef.current) {
+          clearTimeout(physicalButtonHoldTimerRef.current)
+          physicalButtonHoldTimerRef.current = null
+        }
+        
+        // Start 2-second hold timer for force dispense
+        physicalButtonHoldTimerRef.current = setTimeout(() => {
+          console.log('✅ GPIO26 button held for 2 seconds - triggering force dispense')
+          physicalButtonHoldTimerRef.current = null
+          physicalButtonHoldStartRef.current = null
+          handleForceDispense()
+        }, 2000) // 2 seconds
+        
+        // Clear any pending button press
+        if (buttonPressTimeout) {
+          clearTimeout(buttonPressTimeout)
+          buttonPressTimeout = null
+        }
+        
+        // Debounce: wait 100ms before processing to avoid double-trigger
+        buttonPressTimeout = setTimeout(() => {
+          // Check if hold was already completed (force dispense triggered)
+          if (!physicalButtonHoldStartRef.current) {
+            console.log('⏭️ Hold completed - force dispense already triggered, skipping normal press')
+            return
+          }
+          
+          console.log('🔘 GPIO26 button pressed! (after debounce)')
+          console.log('🔍 Current dialog state:', servo2ConfirmDialog ? 'OPEN' : 'CLOSED')
+          console.log('🔍 Processing flag:', servo2ProcessingRef.current)
+          
+          // Check if already processing
+          if (servo2ProcessingRef.current) {
+            console.log('⚠️ Servo2 action already in progress - ignoring button press')
+            return
+          }
+          
+          // Check if dialog is open
+          if (servo2ConfirmDialog) {
+            console.log('✅ Dialog is open - triggering YES response')
+            console.log('🔍 onConfirm function exists:', typeof servo2ConfirmDialog.onConfirm === 'function')
+            // Cancel hold timer since we're doing normal action
+            if (physicalButtonHoldTimerRef.current) {
+              clearTimeout(physicalButtonHoldTimerRef.current)
+              physicalButtonHoldTimerRef.current = null
+            }
+            physicalButtonHoldStartRef.current = null
+            // Trigger the YES response
+            try {
+              servo2ConfirmDialog.onConfirm()
+              console.log('✅ onConfirm called successfully')
+            } catch (error) {
+              console.error('❌ Error triggering onConfirm:', error)
+              servo2ProcessingRef.current = false // Reset on error
+            }
+          } else {
+            console.log('⚠️ Button pressed but no dialog is open')
+            console.log('💡 Dialog will appear after next dispense')
+            // If no dialog, wait for hold to complete (don't cancel timer)
+          }
+        }, 100) // 100ms debounce
+      } else {
+        // Button released
+        console.log('🔘 GPIO26 button released')
+        const holdDuration = physicalButtonHoldStartRef.current 
+          ? Date.now() - physicalButtonHoldStartRef.current 
+          : 0
+        
+        // Cancel hold timer if button was released before 2 seconds
+        if (physicalButtonHoldTimerRef.current) {
+          clearTimeout(physicalButtonHoldTimerRef.current)
+          physicalButtonHoldTimerRef.current = null
+          console.log(`⏱️ Hold cancelled - button released after ${holdDuration}ms`)
+        }
+        physicalButtonHoldStartRef.current = null
+      }
+    }
+    
+    setButtonPressCallback(handleButtonPress)
+    console.log('✅ Button press callback registered')
+    console.log('💡 Callback will be called when button_press message is received')
+    console.log('💡 Hold button for 2 seconds to trigger force dispense')
+
+    return () => {
+      console.log('🧹 Cleaning up button press callback')
+      if (buttonPressTimeout) {
+        clearTimeout(buttonPressTimeout)
+      }
+      if (physicalButtonHoldTimerRef.current) {
+        clearTimeout(physicalButtonHoldTimerRef.current)
+      }
+      setButtonPressCallback(null)
+    }
+  }, [servo2ConfirmDialog])
+
   // Track already executed schedules to prevent duplicates
   const executedSchedulesRef = useRef<Set<string>>(new Set())
+
+  // Auto-sync dates on component mount and when current day changes
+  useEffect(() => {
+    const now = getPhilippineTime()
+    const currentDayOfWeek = now.getDay()
+    const currentDate = new Date(now)
+    currentDate.setHours(0, 0, 0, 0)
+    
+    // Calculate Saturday and Sunday dates
+    let saturdayDate: Date
+    let sundayDate: Date
+    
+    if (currentDayOfWeek === 6) { // Today is Saturday
+      saturdayDate = new Date(currentDate)
+      sundayDate = new Date(currentDate)
+      sundayDate.setDate(currentDate.getDate() + 1)
+    } else if (currentDayOfWeek === 0) { // Today is Sunday
+      saturdayDate = new Date(currentDate)
+      saturdayDate.setDate(currentDate.getDate() - 1)
+      sundayDate = new Date(currentDate)
+    } else { // Other day - find next Saturday and Sunday
+      const daysUntilSaturday = (6 - currentDayOfWeek + 7) % 7 || 7
+      saturdayDate = new Date(currentDate)
+      saturdayDate.setDate(currentDate.getDate() + daysUntilSaturday)
+      sundayDate = new Date(saturdayDate)
+      sundayDate.setDate(saturdayDate.getDate() + 1)
+    }
+    
+    // Format dates as YYYY-MM-DD
+    const formatDate = (date: Date): string => {
+      const year = date.getFullYear()
+      const month = String(date.getMonth() + 1).padStart(2, '0')
+      const day = String(date.getDate()).padStart(2, '0')
+      return `${year}-${month}-${day}`
+    }
+    
+    const saturdayDateStr = formatDate(saturdayDate)
+    const sundayDateStr = formatDate(sundayDate)
+    
+    // Update dates in state and localStorage (only if not already set by user or fetchDayDataWithUserId)
+    // For caregivers, use owner's user_id in the key so dates sync
+    // Note: This runs after ownerUserId is resolved, so we can use the correct keys
+    setDays(prevDays => {
+      const updated = prevDays.map(d => {
+        // Only auto-sync if no date is set AND ownerUserId is available (for caregivers)
+        // fetchDayDataWithUserId will set dates from the correct keys, so we only need to handle
+        // the case where dates weren't loaded from localStorage
+        if (!d.selectedDate && (isOwner || ownerUserId)) {
+          if (d.dayOfWeek === 6) {
+            // Use owner-specific key if caregiver, otherwise regular key
+            const currentOwnerUserId = isOwner ? (user?.id || '') : (ownerUserId || '')
+            const storageKey = isOwner
+              ? 'pillpal_selectedDate_6'
+              : `pillpal_selectedDate_${currentOwnerUserId}_6`
+            
+            // Check if date exists in localStorage first
+            const savedDate = localStorage.getItem(storageKey)
+            if (savedDate) {
+              return { ...d, selectedDate: savedDate }
+            } else {
+              // No saved date, use calculated date
+              localStorage.setItem(storageKey, saturdayDateStr)
+              return { ...d, selectedDate: saturdayDateStr }
+            }
+          } else if (d.dayOfWeek === 0) {
+            // Use owner-specific key if caregiver, otherwise regular key
+            const currentOwnerUserId = isOwner ? (user?.id || '') : (ownerUserId || '')
+            const storageKey = isOwner
+              ? 'pillpal_selectedDate_0'
+              : `pillpal_selectedDate_${currentOwnerUserId}_0`
+            
+            // Check if date exists in localStorage first
+            const savedDate = localStorage.getItem(storageKey)
+            if (savedDate) {
+              return { ...d, selectedDate: savedDate }
+            } else {
+              // No saved date, use calculated date
+              localStorage.setItem(storageKey, sundayDateStr)
+              return { ...d, selectedDate: sundayDateStr }
+            }
+          }
+        }
+        return d
+      })
+      daysRef.current = updated // Update ref
+      return updated
+    })
+  }, [isOwner, ownerUserId, user?.id]) // Re-run if owner context changes
+
+  // Send schedule updates to LCD display on Pi
+  useEffect(() => {
+    if (!piConnected || !days || days.length === 0) {
+      return
+    }
+
+    // Collect all schedules from all days
+    const allSchedules: Array<{time: string, medication?: string, time_frame?: string, date?: string}> = []
+    
+    days.forEach(day => {
+      // Check each time frame (morning, afternoon, evening)
+      const timeFrames: Array<'morning' | 'afternoon' | 'evening'> = ['morning', 'afternoon', 'evening']
+      
+      timeFrames.forEach(timeFrame => {
+        const time = day.timeFrameTimes[timeFrame]
+        const medications = day.medications[timeFrame]
+        
+        // If there's a time set and medications, add to schedules
+        if (time && medications && medications.length > 0) {
+          medications.forEach(med => {
+            allSchedules.push({
+              time: time,
+              medication: med.medication_name,
+              time_frame: timeFrame,
+              date: day.selectedDate || undefined // Include date for LCD tracking
+            })
+          })
+        }
+      })
+    })
+
+    // Send to Pi LCD if connected
+    if (allSchedules.length > 0 && isConnectedToPi()) {
+      updateLCDSchedules(allSchedules)
+        .then(() => {
+          console.log(`📺 LCD: Sent ${allSchedules.length} schedule(s) to Pi`)
+        })
+        .catch((error) => {
+          console.error('❌ Failed to update LCD schedules:', error)
+        })
+    }
+  }, [days, piConnected])
 
   // Automatic scheduling system - check every second
   useEffect(() => {
@@ -225,10 +734,19 @@ export default function Home() {
       }
       checkCounter++
 
-      // Check if today's date matches any scheduled date (no day restriction)
+      // Check if today's date matches any scheduled date
       const todayDate = `${year}-${month}-${day}`
       const todayDay = days.find(d => d.selectedDate === todayDate)
-      if (!todayDay) return
+      if (!todayDay) {
+        // Log only every 60 seconds to reduce console spam
+        if (checkCounter % 60 === 0) {
+          console.log(`⚠️ No schedule found for date ${todayDate}`)
+          console.log(`📋 Available dates:`, days.map(d => ({ name: d.name, date: d.selectedDate })))
+        }
+        return
+      }
+      
+      console.log(`✅ Found schedule for ${todayDay.name} on ${todayDate}`)
       
       // Get all medications for today (from all time frames)
       const allMedications = [
@@ -276,35 +794,38 @@ export default function Home() {
           }
         }
         
-        // Check if the time frame's scheduled time matches current time
+        // Check if the time frame's scheduled time matches current time (exact match)
         const frameTime = todayDay.timeFrameTimes[timeFrame as keyof typeof todayDay.timeFrameTimes]
-        if (!frameTime) continue // No time set for this frame
-        
-        const frameTimeHHMM = frameTime.slice(0, 5)
-        const isTimeMatch = frameTimeHHMM === currentTime
-        
-        if (!isTimeMatch) continue
-        
-        // Check if current time is within this time frame
-        const currentHour = now.getHours()
-        const currentMinute = now.getMinutes()
-        const currentTimeMinutes = currentHour * 60 + currentMinute
-        
-        let isInTimeFrame = false
-        if (timeFrame === 'morning') {
-          isInTimeFrame = currentTimeMinutes >= 300 && currentTimeMinutes <= 720
-        } else if (timeFrame === 'afternoon') {
-          isInTimeFrame = currentTimeMinutes >= 721 && currentTimeMinutes <= 1140
-        } else if (timeFrame === 'evening') {
-          isInTimeFrame = currentTimeMinutes >= 1141 || currentTimeMinutes <= 180
+        if (!frameTime) {
+          if (checkCounter % 60 === 0) {
+            console.log(`⏸️ No time set for ${timeFrame} on ${todayDay.name}`)
+          }
+          continue // No time set for this frame
         }
         
-        // Only dispense at the TOP of the minute (seconds 0-2)
+        const frameTimeHHMM = frameTime.slice(0, 5) // Get HH:MM format
+        const isTimeMatch = frameTimeHHMM === currentTime
+        
+        if (!isTimeMatch) {
+          // Log only every 60 seconds to reduce console spam
+          if (checkCounter % 60 === 0 && frameTimeHHMM) {
+            console.log(`⏰ Waiting for ${timeFrame} at ${frameTimeHHMM} (current: ${currentTime})`)
+          }
+          continue
+        }
+        
+        console.log(`✅ TIME MATCH! ${timeFrame} scheduled for ${frameTimeHHMM}, current time: ${currentTime}`)
+        console.log(`📋 Medications in ${timeFrame}:`, frameMeds.length)
+        
+        // Only dispense at the TOP of the minute (seconds 0-2) to avoid multiple triggers
         const currentSeconds = now.getSeconds()
         const isTopOfMinute = currentSeconds < 3
         
-        if (isInTimeFrame && isTopOfMinute) {
+        if (isTopOfMinute) {
           activeTimeFrames.add(timeFrame)
+          console.log(`✅ Added ${timeFrame} to active time frames (seconds: ${currentSeconds})`)
+        } else {
+          console.log(`⏳ Waiting for top of minute (current seconds: ${currentSeconds})`)
         }
       }
 
@@ -324,223 +845,21 @@ export default function Home() {
         const frameMedications = medicationsByFrame[timeFrame]
         const medicationNames = frameMedications.map(m => m.medication_name).join(', ')
         
-        console.log(`🕐 Time to dispense ${timeFrame} bundle on ${todayDay.name}! Medications: ${medicationNames}`)
+        console.log(`🕐 AUTO-DISPENSE: Time to dispense ${timeFrame} bundle on ${todayDay.name}! Medications: ${medicationNames}`)
+        console.log(`📅 Date: ${todayDate}, Time: ${currentTime}, DayOfWeek: ${todayDay.dayOfWeek}`)
         
-        // Update UI to show dispensing
-        setDays(prevDays => 
-          prevDays.map(d => 
-            d.dayOfWeek === currentDayOfWeek 
-              ? { ...d, status: 'dispensing', lastDispensedTime: currentTime }
-              : d
-          )
-        )
-        
+        // Call handleDispense with the correct dayOfWeek and timeFrame
+        // This ensures auto-dispense follows the exact same flow as manual dispense
+        // Use todayDay.dayOfWeek (which is 6 for Saturday or 0 for Sunday in UI)
+        // Skip time window check since we're at the exact scheduled time
         try {
-          if (piConnected) {
-            // Dispense ALL medications in this time frame bundle
-            // Servo spins once for the entire bundle
-            const response = await dispenseToPi('servo1', medicationNames)
-            console.log('⏰ Auto-dispense bundle response:', response)
+          await handleDispense(todayDay.dayOfWeek, timeFrame as 'morning' | 'afternoon' | 'evening', true)
+          console.log(`✅ Auto-dispense triggered successfully for ${timeFrame} on ${todayDay.name}`)
 
-            // Check if servo1 is at 180° (needs confirmation to reset)
-            const isAt180 = response?.servo1_at_180 === true
-            
-            // Show confirmation dialog after successful dispense (same as manual dispense)
-            if (response?.status === 'success') {
-              console.log('✅ Auto-dispense successful, showing confirmation dialog')
-              if (isAt180) {
-                console.log('🔄 Servo1 is at 180° - will reset to 0° if confirmed')
-              }
-              
-              // Create dialog config (same as manual dispense)
-              const dialogConfig = {
-                isAt180: isAt180,
-                onConfirm: async () => {
-                  console.log('✅ User clicked YES (auto-dispense)')
-                  // Clear all timeouts when user manually confirms
-                  if (servo2DialogTimeoutRef.current) {
-                    clearTimeout(servo2DialogTimeoutRef.current)
-                    servo2DialogTimeoutRef.current = null
-                  }
-                  if (servo2DialogReopenTimeoutRef.current) {
-                    clearTimeout(servo2DialogReopenTimeoutRef.current)
-                    servo2DialogReopenTimeoutRef.current = null
-                  }
-                  setServo2ConfirmDialog(null)
-                  servo2DialogConfigRef.current = null
-                  try {
-                    const servo2Response = await confirmServo2Dispense()
-                    if (servo2Response?.status === 'success') {
-                      if (isAt180 && servo2Response?.servo1_reset) {
-                        showNotification('Medicine dispensed! Servo1 reset to 0° and Servo2 completed.', 'success')
-                      } else {
-                        showNotification('Medicine dispensed successfully!', 'success')
-                      }
-                    } else {
-                      showNotification('Medicine dispense failed', 'error')
-                    }
-                  } catch (error: any) {
-                    console.error('❌ Error:', error)
-                    showNotification(`Error: ${error.message || 'Failed'}`, 'error')
-                  }
-                },
-                onCancel: () => {
-                  console.log('❌ User clicked NO (auto-dispense)')
-                  // Clear all timeouts when user manually cancels
-                  if (servo2DialogTimeoutRef.current) {
-                    clearTimeout(servo2DialogTimeoutRef.current)
-                    servo2DialogTimeoutRef.current = null
-                  }
-                  if (servo2DialogReopenTimeoutRef.current) {
-                    clearTimeout(servo2DialogReopenTimeoutRef.current)
-                    servo2DialogReopenTimeoutRef.current = null
-                  }
-                  setServo2ConfirmDialog(null)
-                  servo2DialogConfigRef.current = null
-                  if (isAt180) {
-                    showNotification('Cancelled. Servo1 will stay at 180° and Servo2 will not move.', 'info')
-                  } else {
-                    showNotification('Medicine dispense cancelled', 'info')
-                  }
-                }
-              }
-              
-              // Store config for reopening
-              servo2DialogConfigRef.current = dialogConfig
-              
-              // Set dialog
-              setServo2ConfirmDialog(dialogConfig)
-              
-              // Setup auto-close/reopen cycle: close after 2 min, reopen after 3 min total
-              setupServo2DialogAutoCycle()
-            }
-
-            // Log auto dispense success for each medication in bundle
-            try {
-              const { data: { session } } = await supabase.auth.getSession()
-              if (session?.user) {
-                // Log each medication separately for history
-                for (const med of frameMedications) {
-                  await supabase.from('dispense_history').insert({
-                    user_id: session.user.id,
-                    servo_number: todayDay.servoNumber,
-                    medication_name: med.medication_name,
-                    action: 'auto',
-                    status: 'success',
-                    notes: `Scheduled auto-dispense bundle on ${todayDay.name} (${timeFrame}) - ${medicationNames}`
-                  })
-                }
-              }
-            } catch (logErr) {
-              console.error('Log auto-dispense error:', logErr)
-            }
-
-            // Send SMS notification for auto-dispense via Pi (SIMCOM module) - Multiple recipients
-            try {
-              const { data: { session } } = await supabase.auth.getSession()
-              if (session?.user && piConnected) {
-                // Get user's phone number and emergency contact from profiles table
-                const { data: profileData } = await supabase
-                  .from('profiles')
-                  .select('phone_number, emergency_contact')
-                  .eq('id', session.user.id)
-                  .single()
-
-                // Collect all phone numbers to send SMS to
-                const phoneNumbers: string[] = []
-                
-                // Add main phone number
-                if (profileData?.phone_number) {
-                  phoneNumbers.push(profileData.phone_number)
-                }
-                
-                // Extract phone number from emergency contact
-                if (profileData?.emergency_contact) {
-                  const emergencyContact = profileData.emergency_contact.trim()
-                  const phoneMatch = emergencyContact.match(/(\+?63|0)?9\d{9}/)
-                  if (phoneMatch) {
-                    let emergencyPhone = phoneMatch[0]
-                    if (!emergencyPhone.startsWith('0') && !emergencyPhone.startsWith('+63')) {
-                      emergencyPhone = '0' + emergencyPhone
-                    }
-                    phoneNumbers.push(emergencyPhone)
-                  }
-                }
-
-                if (phoneNumbers.length > 0) {
-                                    const smsMessage = `${medicationNames}`
-                  
-                  // Send SMS via Pi WebSocket (SIMCOM module) to all recipients
-                  const smsResult = await sendSmsViaPi(phoneNumbers, smsMessage)
-                  
-                  if (smsResult.success) {
-                    console.log(` SMS notification sent via SIMCOM (auto-dispense) to ${phoneNumbers.length} recipient(s):`, smsResult)
-                  } else {
-                    console.warn(' SMS notification failed (auto-dispense):', smsResult)
-                  }
-                } else {
-                  console.log('ℹ️ No phone numbers found in profile, skipping SMS notification')
-                }
-              } else if (!piConnected) {
-                console.log('ℹ️ Pi not connected, skipping SMS notification')
-              }
-            } catch (smsErr) {
-              console.error('Error sending SMS notification (auto-dispense):', smsErr)
-              // Don't block the dispense if SMS fails
-            }
-          } else {
-            console.log(' Pi not connected - would dispense bundle:', medicationNames)
-            // Log attempted auto dispense when Pi offline
-            try {
-              const { data: { session } } = await supabase.auth.getSession()
-              if (session?.user) {
-                for (const med of frameMedications) {
-                  await supabase.from('dispense_history').insert({
-                    user_id: session.user.id,
-                    servo_number: todayDay.servoNumber,
-                    medication_name: med.medication_name,
-                    action: 'auto',
-                    status: 'error',
-                    notes: 'Pi offline during auto-dispense bundle'
-                  })
-                }
-              }
-            } catch (logErr) {
-              console.error('Log auto-dispense offline error:', logErr)
-            }
-          }
         } catch (error) {
-          console.error(' Auto-dispense bundle error:', error)
-          // Log auto dispense error
-          try {
-            const { data: { session } } = await supabase.auth.getSession()
-            if (session?.user) {
-              for (const med of frameMedications) {
-                await supabase.from('dispense_history').insert({
-                  user_id: session.user.id,
-                  servo_number: todayDay.servoNumber,
-                  medication_name: med.medication_name,
-                  action: 'auto',
-                  status: 'error',
-                  notes: error instanceof Error ? error.message : 'Auto-dispense bundle error'
-                })
-              }
-            }
-          } catch (logErr) {
-            console.error('Log auto-dispense error (insert) failed:', logErr)
-          }
+          console.error('❌ Auto-dispense error:', error)
+          // Error is already handled by handleDispense, just log here
         }
-
-        // Reset status after 3 seconds
-        setTimeout(() => {
-          setDays(prevDays => 
-            prevDays.map(d => 
-              d.dayOfWeek === currentDayOfWeek 
-                ? { ...d, status: 'ready' }
-                : d
-            )
-          )
-        }, 3000)
         
         // Clear the executed flag after the minute passes (prevent memory leak)
         setTimeout(() => {
@@ -556,7 +875,7 @@ export default function Home() {
     const interval = setInterval(checkSchedules, 1000) // 1 second
 
     return () => clearInterval(interval)
-  }, [days, piConnected])
+  }, [days, piConnected, lastServo1Angle, servo2DialogState])
 
   useEffect(() => {
     if (!loading && !user) {
@@ -576,11 +895,11 @@ export default function Home() {
       // Resolve owner and get the resolved values directly (don't rely on state)
       const resolved = await resolveOwner()
       
-      if (!isMounted) return
+      if (!isMounted || !resolved) return
       
       // Use resolved values directly instead of state
-      const resolvedOwnerUserId = resolved?.ownerUserId || ownerUserId || user.id
-      const resolvedIsOwner = resolved?.isOwner ?? isOwner ?? true
+      const resolvedOwnerUserId = resolved.ownerUserId
+      const resolvedIsOwner = resolved.isOwner
       
       console.log('📊 Owner resolved:', {
         ownerUserId: resolvedOwnerUserId,
@@ -588,7 +907,7 @@ export default function Home() {
         resolvedFromFunction: resolved
       })
       
-      // Fetch data with resolved values
+      // Fetch data with resolved values (caregiver will see owner's data)
       await fetchDayDataWithUserId(resolvedOwnerUserId, resolvedIsOwner)
     }
     
@@ -626,6 +945,26 @@ export default function Home() {
       clearInterval(checkInterval)
     }
   }, [user]) // Only depend on user, not ownerUserId or isOwner
+
+  // Refetch data when ownerUserId changes (e.g., when caregiver relationship is established)
+  useEffect(() => {
+    if (!user) return
+    
+    // If ownerUserId is not set yet, wait for it (don't return, just log)
+    if (!ownerUserId) {
+      console.log('⏳ Waiting for ownerUserId to be resolved...')
+      return
+    }
+    
+    console.log('🔄 ownerUserId changed, refetching data for:', ownerUserId, '(isOwner:', isOwner, ')')
+    // Small delay to ensure state is fully updated
+    const timer = setTimeout(() => {
+      console.log('🔄 Executing fetchDayDataWithUserId with ownerUserId:', ownerUserId, 'isOwner:', isOwner)
+      fetchDayDataWithUserId(ownerUserId, isOwner)
+    }, 200)
+    
+    return () => clearTimeout(timer)
+  }, [ownerUserId, isOwner, user]) // Refetch when owner/user context changes
 
   // Helper function to refresh session and handle JWT expiration
   const refreshSessionIfNeeded = async () => {
@@ -787,13 +1126,14 @@ export default function Home() {
         // User has a relationship - check if it's accepted
         if (memberData.status === 'accepted') {
           // Relationship exists and is accepted - user is an active caregiver
-          console.log(' User is an accepted caregiver, owner:', memberData.owner_user_id, 'status:', memberData.status)
+          console.log('✅ User is an accepted caregiver, owner:', memberData.owner_user_id, 'status:', memberData.status)
           const result = {
             ownerUserId: memberData.owner_user_id,
             isOwner: false
           }
           setOwnerUserId(result.ownerUserId)
           setIsOwner(result.isOwner)
+          console.log('✅ Set ownerUserId to:', result.ownerUserId, 'isOwner:', result.isOwner)
           return result
         } else {
           // Relationship exists but is pending or rejected - user is still considered owner until accepted
@@ -845,15 +1185,66 @@ export default function Home() {
       const session = await refreshSessionIfNeeded()
       if (!session) return
       
-      console.log('📊 Fetching day data with user_id:', targetUserId, '(isOwner:', targetIsOwner, ')')
+      // targetUserId is always the owner's ID:
+      // - For caregivers: targetUserId = owner's ID (from resolveOwner)
+      // - For owners: targetUserId = their own ID (from resolveOwner)
+      // Always use targetUserId directly
+      const effectiveUserId = targetUserId
+      
+      console.log('📊 Fetching day data:', {
+        effectiveUserId,
+        targetUserId,
+        targetIsOwner,
+        sessionUserId: session.user.id,
+        note: targetIsOwner ? 'Owner viewing own data' : 'Caregiver viewing owner data'
+      })
+      
+      if (!effectiveUserId) {
+        console.error('❌ No effectiveUserId available!')
+        return
+      }
       
       // Fetch day_config for Saturday (6) and Sunday (0) (including time frame times)
       // Note: day_of_week is just for UI organization, actual scheduling uses selectedDate
+      // Use effectiveUserId (owner's ID for caregivers)
+      // For caregivers, we need to query with the owner's user_id
+      console.log('🔍 Querying day_config with effectiveUserId:', effectiveUserId, 'targetIsOwner:', targetIsOwner)
+      
       let { data: configs, error } = await supabase
         .from('day_config')
-        .select('id, user_id, day_of_week, medication_name, is_active, morning_time, afternoon_time, evening_time, created_at, updated_at')
-        .eq('user_id', targetUserId)
-        .in('day_of_week', [6, 0]) // Saturday and Sunday (UI labels only)
+        .select('id, user_id, day_of_week, medication_name, is_active, morning_time, afternoon_time, evening_time, selected_date, created_at, updated_at')
+        .eq('user_id', effectiveUserId)
+        .in('day_of_week', [0, 6]) // Database: Sunday (0), Saturday (6)
+      
+      // Debug: Check if query returned anything
+      if (!configs || configs.length === 0) {
+        console.warn('⚠️ No day_config found for user_id:', effectiveUserId, 'targetIsOwner:', targetIsOwner)
+        console.warn('⚠️ Session user_id:', session.user.id)
+        
+        // For caregivers, try querying with session user_id to see if RLS is the issue
+        if (!targetIsOwner) {
+          console.log('🔍 Caregiver detected - checking if RLS is blocking access...')
+          const { data: testConfigs } = await supabase
+            .from('day_config')
+            .select('user_id, day_of_week')
+            .eq('user_id', session.user.id)
+            .in('day_of_week', [0, 6])
+            .limit(5)
+          console.log('🔍 Caregiver\'s own day_configs:', testConfigs?.length || 0, testConfigs)
+          
+          // Try to see what user_ids exist in day_config (for debugging - might be blocked by RLS)
+          const { data: allConfigs, error: allError } = await supabase
+            .from('day_config')
+            .select('user_id, day_of_week')
+            .in('day_of_week', [0, 6])
+            .limit(10)
+          if (allError) {
+            console.error('🔍 Error querying all configs (likely RLS):', allError.message)
+          } else {
+            console.log('🔍 Sample day_config user_ids in database:', allConfigs?.map(c => ({ user_id: c.user_id, day_of_week: c.day_of_week })))
+          }
+        }
+      }
 
       if (error) {
         console.error('❌ Supabase error fetching day_config:', error)
@@ -874,8 +1265,8 @@ export default function Home() {
           const retryResult = await supabase
             .from('day_config')
             .select('id, user_id, day_of_week, medication_name, is_active, morning_time, afternoon_time, evening_time, created_at, updated_at')
-            .eq('user_id', targetUserId)
-            .in('day_of_week', [6, 0])
+            .eq('user_id', effectiveUserId)
+            .in('day_of_week', [0, 6]) // Database: Sunday (0), Saturday (6)
           
           if (retryResult.error) {
             if (retryResult.error.message?.includes('JWT') || retryResult.error.message?.includes('expired')) {
@@ -895,23 +1286,46 @@ export default function Home() {
         }
       }
 
-      console.log('✅ Found day configs:', configs?.length || 0)
+      console.log('✅ Found day configs:', configs?.length || 0, 'for user_id:', effectiveUserId)
+      if (configs && configs.length > 0) {
+        console.log('📋 Day configs details:', configs.map(c => ({
+          id: c.id,
+          user_id: c.user_id,
+          day_of_week: c.day_of_week,
+          morning_time: c.morning_time,
+          afternoon_time: c.afternoon_time,
+          evening_time: c.evening_time
+        })))
+      }
 
       // Always show Saturday and Sunday, even if not configured yet
       const dayData: DayData[] = []
       
-      // Initialize Saturday (6) and Sunday (0)
-      for (const dayOfWeek of [6, 0]) {
-        const dayName = dayOfWeek === 6 ? 'Saturday' : 'Sunday'
-        const config = configs?.find(c => c.day_of_week === dayOfWeek)
+      // Database day_of_week matches UI day_of_week
+      const dayMapping = [
+        { dbDay: 6, uiDay: 6, name: 'Saturday' },
+        { dbDay: 0, uiDay: 0, name: 'Sunday' }
+      ]
+      
+      for (const mapping of dayMapping) {
+        const dayName = mapping.name
+        const config = configs?.find(c => c.day_of_week === mapping.dbDay)
         
         if (config && config.is_active) {
           // Fetch medications for this day from time_frame_medications
+          console.log(`📦 Fetching medications for ${dayName} (day_config_id: ${config.id}, user_id: ${config.user_id})`)
           const { data: medications, error: medsError } = await supabase
             .from('time_frame_medications')
             .select('*')
             .eq('day_config_id', config.id)
             .order('time')
+          
+          console.log(`📦 Found ${medications?.length || 0} medications for ${dayName}:`, medications?.map(m => ({
+            id: m.id,
+            medication_name: m.medication_name,
+            time_frame: m.time_frame,
+            day_config_id: m.day_config_id
+          })))
 
           if (medsError) {
             console.error(`❌ Error fetching medications for ${dayName}:`, medsError)
@@ -945,14 +1359,69 @@ export default function Home() {
             evening: config.evening_time ? config.evening_time.slice(0, 5) : null
           }
 
-          // Load selectedDate from localStorage
-          const storageKey = `pillpal_selectedDate_${config.day_of_week}`
-          const savedDate = typeof window !== 'undefined' ? localStorage.getItem(storageKey) : null
+          // Load selectedDate from database first (for syncing between patient and caregiver)
+          // Fall back to localStorage, then auto-calculate
+          let selectedDateFromDB = config.selected_date || null
+          
+          // Auto-sync date if not in database
+          const now = getPhilippineTime()
+          const currentDayOfWeek = now.getDay()
+          let autoDate: string | null = null
+          
+          if (currentDayOfWeek === 6 && mapping.uiDay === 6) { // Today is Saturday
+            const today = new Date(now)
+            today.setHours(0, 0, 0, 0)
+            autoDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+          } else if (currentDayOfWeek === 0 && mapping.uiDay === 0) { // Today is Sunday
+            const today = new Date(now)
+            today.setHours(0, 0, 0, 0)
+            autoDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+          } else if (mapping.uiDay === 6) { // Saturday - find next Saturday
+            const daysUntilSaturday = (6 - currentDayOfWeek + 7) % 7 || 7
+            const saturday = new Date(now)
+            saturday.setDate(now.getDate() + daysUntilSaturday)
+            saturday.setHours(0, 0, 0, 0)
+            autoDate = `${saturday.getFullYear()}-${String(saturday.getMonth() + 1).padStart(2, '0')}-${String(saturday.getDate()).padStart(2, '0')}`
+          } else if (mapping.uiDay === 0) { // Sunday - find next Sunday
+            const daysUntilSunday = (0 - currentDayOfWeek + 7) % 7 || 7
+            const sunday = new Date(now)
+            sunday.setDate(now.getDate() + daysUntilSunday)
+            sunday.setHours(0, 0, 0, 0)
+            autoDate = `${sunday.getFullYear()}-${String(sunday.getMonth() + 1).padStart(2, '0')}-${String(sunday.getDate()).padStart(2, '0')}`
+          }
+          
+          // Use database date first, then auto-calculated date
+          const finalDate = selectedDateFromDB || autoDate
+          
+          // If no date in database but we have an auto date, save it to database
+          if (!selectedDateFromDB && autoDate) {
+            // Update database with auto-calculated date
+            await supabase
+              .from('day_config')
+              .update({ selected_date: autoDate, updated_at: new Date().toISOString() })
+              .eq('id', config.id)
+              .then(() => {
+                console.log(`💾 Saved auto-calculated date ${autoDate} to database for ${dayName}`)
+              })
+          }
+          
+          // Calculate day name from selectedDate (if available)
+          let displayName = dayName
+          if (finalDate) {
+            try {
+              const dateObj = new Date(finalDate + 'T00:00:00')
+              const dayOfWeekFromDate = dateObj.getDay() // 0 = Sunday, 6 = Saturday
+              displayName = getDayName(dayOfWeekFromDate)
+            } catch (e) {
+              // If date parsing fails, use default dayName
+              displayName = dayName
+            }
+          }
           
           dayData.push({
-            dayOfWeek: config.day_of_week,
-            name: dayName,
-            selectedDate: savedDate,
+            dayOfWeek: mapping.uiDay, // Use UI day_of_week (6 or 0)
+            name: displayName, // Use calculated day name from selectedDate
+            selectedDate: finalDate,
             medications: {
               morning: morningMeds.sort((a, b) => a.medication_name.localeCompare(b.medication_name)),
               afternoon: afternoonMeds.sort((a, b) => a.medication_name.localeCompare(b.medication_name)),
@@ -965,14 +1434,83 @@ export default function Home() {
           })
         } else {
           // Day not configured yet - show as empty
-          // Load selectedDate from localStorage
-          const storageKey = `pillpal_selectedDate_${dayOfWeek}`
-          const savedDate = typeof window !== 'undefined' ? localStorage.getItem(storageKey) : null
+          // Check if there's a day_config with just a selected_date (no medications yet)
+          const { data: emptyConfig } = await supabase
+            .from('day_config')
+            .select('id, selected_date')
+            .eq('user_id', effectiveUserId)
+            .eq('day_of_week', mapping.dbDay)
+            .maybeSingle()
+          
+          let selectedDateFromDB = emptyConfig?.selected_date || null
+          
+          // Auto-sync date if not in database
+          const now = getPhilippineTime()
+          const currentDayOfWeek = now.getDay()
+          let autoDate: string | null = null
+          
+          if (currentDayOfWeek === 6 && mapping.uiDay === 6) { // Today is Saturday
+            const today = new Date(now)
+            today.setHours(0, 0, 0, 0)
+            autoDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+          } else if (currentDayOfWeek === 0 && mapping.uiDay === 0) { // Today is Sunday
+            const today = new Date(now)
+            today.setHours(0, 0, 0, 0)
+            autoDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+          } else if (mapping.uiDay === 6) { // Saturday - find next Saturday
+            const daysUntilSaturday = (6 - currentDayOfWeek + 7) % 7 || 7
+            const saturday = new Date(now)
+            saturday.setDate(now.getDate() + daysUntilSaturday)
+            saturday.setHours(0, 0, 0, 0)
+            autoDate = `${saturday.getFullYear()}-${String(saturday.getMonth() + 1).padStart(2, '0')}-${String(saturday.getDate()).padStart(2, '0')}`
+          } else if (mapping.uiDay === 0) { // Sunday - find next Sunday
+            const daysUntilSunday = (0 - currentDayOfWeek + 7) % 7 || 7
+            const sunday = new Date(now)
+            sunday.setDate(now.getDate() + daysUntilSunday)
+            sunday.setHours(0, 0, 0, 0)
+            autoDate = `${sunday.getFullYear()}-${String(sunday.getMonth() + 1).padStart(2, '0')}-${String(sunday.getDate()).padStart(2, '0')}`
+          }
+          
+          // Use database date first, then auto-calculated date
+          const finalDateEmpty = selectedDateFromDB || autoDate
+          
+          // If no date in database but we have an auto date, save it to database
+          if (!selectedDateFromDB && autoDate && emptyConfig) {
+            // Update existing day_config with auto-calculated date
+            await supabase
+              .from('day_config')
+              .update({ selected_date: autoDate, updated_at: new Date().toISOString() })
+              .eq('id', emptyConfig.id)
+          } else if (!selectedDateFromDB && autoDate && !emptyConfig) {
+            // Create new day_config with auto-calculated date
+            await supabase
+              .from('day_config')
+              .insert({
+                user_id: effectiveUserId,
+                day_of_week: mapping.dbDay,
+                medication_name: '',
+                is_active: false, // Not active until medications are added
+                selected_date: autoDate
+              })
+          }
+          
+          // Calculate day name from selectedDate (if available)
+          let displayNameEmpty = dayName
+          if (finalDateEmpty) {
+            try {
+              const dateObj = new Date(finalDateEmpty + 'T00:00:00')
+              const dayOfWeekFromDate = dateObj.getDay() // 0 = Sunday, 6 = Saturday
+              displayNameEmpty = getDayName(dayOfWeekFromDate)
+            } catch (e) {
+              // If date parsing fails, use default dayName
+              displayNameEmpty = dayName
+            }
+          }
           
           dayData.push({
-            dayOfWeek: dayOfWeek,
-            name: dayName,
-            selectedDate: savedDate,
+            dayOfWeek: mapping.uiDay, // Use UI day_of_week (6 or 0)
+            name: displayNameEmpty, // Use calculated day name from selectedDate
+            selectedDate: finalDateEmpty,
             medications: {
               morning: [],
               afternoon: [],
@@ -999,6 +1537,7 @@ export default function Home() {
       })))
       
       setDays(dayData)
+      daysRef.current = dayData // Update ref with latest data
     } catch (error: any) {
       console.error('❌ Error fetching day data:', error)
       console.error('Error details:', {
@@ -1031,11 +1570,208 @@ export default function Home() {
     }
   }
 
-  const handleDispense = async (dayOfWeek: number, timeFrame?: 'morning' | 'afternoon' | 'evening') => {
-    // Check Pi connection first
-    if (!piConnected) {
+  // Find the earliest/nearest scheduled time frame across all days
+  // For force dispense, bypass date check and find ANY scheduled time frame
+  const findEarliestScheduledTimeFrame = (bypassDateCheck: boolean = false): { dayOfWeek: number; timeFrame: 'morning' | 'afternoon' | 'evening' } | null => {
+    console.log('🔍 findEarliestScheduledTimeFrame called with bypassDateCheck:', bypassDateCheck)
+    
+    // Use ref to get latest days state (avoids closure issues)
+    const currentDays = daysRef.current.length > 0 ? daysRef.current : days
+    console.log('📋 Days from ref:', daysRef.current)
+    console.log('📋 Days from state:', days)
+    console.log('📋 Using days:', currentDays)
+    console.log('📋 Days length:', currentDays?.length || 0)
+    
+    if (!currentDays || currentDays.length === 0) {
+      console.log('⚠️ Days array is empty!')
+      return null
+    }
+    
+    console.log('📋 Available days:', currentDays.map(d => ({
+      name: d.name,
+      dayOfWeek: d.dayOfWeek,
+      selectedDate: d.selectedDate,
+      isToday: isDateToday(d.selectedDate),
+      morning: { 
+        time: d.timeFrameTimes?.morning || null, 
+        meds: (d.medications?.morning || []).length,
+        medNames: (d.medications?.morning || []).map((m: any) => m.medication_name || m.name || 'unknown')
+      },
+      afternoon: { 
+        time: d.timeFrameTimes?.afternoon || null, 
+        meds: (d.medications?.afternoon || []).length,
+        medNames: (d.medications?.afternoon || []).map((m: any) => m.medication_name || m.name || 'unknown')
+      },
+      evening: { 
+        time: d.timeFrameTimes?.evening || null, 
+        meds: (d.medications?.evening || []).length,
+        medNames: (d.medications?.evening || []).map((m: any) => m.medication_name || m.name || 'unknown')
+      }
+    })))
+    
+    const now = getPhilippineTime()
+    const currentTime = new Date(now)
+    const currentHour = currentTime.getHours()
+    const currentMinute = currentTime.getMinutes()
+    const currentMinutes = currentHour * 60 + currentMinute
+    
+    console.log(`⏰ Current time: ${currentHour}:${String(currentMinute).padStart(2, '0')} (${currentMinutes} minutes)`)
+    
+    let earliestTimeFrame: { dayOfWeek: number; timeFrame: 'morning' | 'afternoon' | 'evening'; timeMinutes: number } | null = null
+    
+    // Check all days and time frames
+    for (const day of currentDays) {
+      // Skip date check only if bypassDateCheck is true (for force dispense)
+      if (!bypassDateCheck && !isDateToday(day.selectedDate)) {
+        console.log(`⏭️ Skipping ${day.name} - date not today (${day.selectedDate})`)
+        continue
+      }
+      
+      console.log(`✅ Checking ${day.name} (date: ${day.selectedDate}, bypassDateCheck: ${bypassDateCheck})`)
+      console.log(`   Full day object:`, {
+        timeFrameTimes: day.timeFrameTimes,
+        medications: day.medications
+      })
+      
+      for (const tf of ['morning', 'afternoon', 'evening'] as const) {
+        // Safely access timeFrameTimes and medications
+        const scheduledTime = day.timeFrameTimes?.[tf] || null
+        const medications = day.medications?.[tf] || []
+        const hasMedications = medications.length > 0
+        
+        console.log(`  ${tf}:`, {
+          scheduledTime: scheduledTime,
+          scheduledTimeType: typeof scheduledTime,
+          scheduledTimeLength: scheduledTime?.length,
+          medications: medications,
+          medicationsLength: medications.length,
+          hasMedications: hasMedications,
+          medicationNames: medications.map((m: any) => m.medication_name || m.name || 'unknown')
+        })
+        
+        // Check if scheduledTime is valid (not null, not empty string)
+        const hasValidTime = scheduledTime !== null && scheduledTime !== '' && scheduledTime.trim() !== ''
+        
+        if (hasValidTime && hasMedications) {
+          const timeParts = scheduledTime.split(':')
+          if (timeParts.length !== 2) {
+            console.log(`    ⚠️ Invalid time format: ${scheduledTime}`)
+            continue
+          }
+          
+          const [hour, minute] = timeParts.map(Number)
+          if (isNaN(hour) || isNaN(minute)) {
+            console.log(`    ⚠️ Invalid time numbers: ${scheduledTime}`)
+            continue
+          }
+          
+          let timeMinutes = hour * 60 + minute
+          
+          console.log(`    ✅ Found scheduled ${tf} at ${scheduledTime} (${timeMinutes} minutes)`)
+          
+          // Handle evening wrap-around (16:05 to 00:00)
+          if (tf === 'evening' && timeMinutes === 0) {
+            timeMinutes = 1440 // Treat 00:00 as end of day (24:00)
+          }
+          
+          // Calculate time difference (handle wrap-around)
+          let timeDiff = timeMinutes - currentMinutes
+          if (timeDiff < 0) {
+            timeDiff += 1440 // Next day
+          }
+          
+          console.log(`    ⏱️ Time difference: ${timeDiff} minutes`)
+          
+          if (!earliestTimeFrame || timeDiff < earliestTimeFrame.timeMinutes) {
+            earliestTimeFrame = {
+              dayOfWeek: day.dayOfWeek,
+              timeFrame: tf,
+              timeMinutes: timeDiff
+            }
+            console.log(`    🎯 New earliest: ${day.name} ${tf} (${timeDiff} minutes away)`)
+          }
+        } else {
+          if (!hasValidTime) {
+            console.log(`    ⏭️ Skipping ${tf} - no valid scheduled time (value: "${scheduledTime}")`)
+          }
+          if (!hasMedications) {
+            console.log(`    ⏭️ Skipping ${tf} - no medications (count: ${medications.length})`)
+          }
+        }
+      }
+    }
+    
+    const result = earliestTimeFrame ? { dayOfWeek: earliestTimeFrame.dayOfWeek, timeFrame: earliestTimeFrame.timeFrame } : null
+    console.log('🔍 Final result:', result)
+    return result
+  }
+
+  // Force dispense the earliest scheduled time frame (bypasses all restrictions)
+  const handleForceDispense = async () => {
+    console.log('🔧 Force dispense triggered - finding earliest scheduled time frame...')
+    console.log('📊 Current days state:', days)
+    console.log('📊 Days ref state:', daysRef.current)
+    console.log('📊 Days length:', days.length)
+    
+    // Use ref to get latest state (avoids stale closure issues)
+    const currentDays = daysRef.current.length > 0 ? daysRef.current : days
+    console.log('📊 Using days:', currentDays)
+    
+    if (!currentDays || currentDays.length === 0) {
+      console.log('⚠️ Days array is empty or not loaded yet')
+      showNotification('No schedule data loaded. Please wait a moment and try again.', 'warning')
+      return
+    }
+    
+    // Find earliest scheduled time frame (bypass all checks)
+    const earliest = findEarliestScheduledTimeFrame(true) // Bypass date check
+    
+    console.log('🔍 Earliest scheduled time frame found:', earliest)
+    
+    if (!earliest) {
+      console.log('⚠️ No scheduled medications found')
+      console.log('📋 Available days:', currentDays.map(d => ({
+        name: d.name,
+        morning: { time: d.timeFrameTimes?.morning, meds: d.medications?.morning?.length || 0 },
+        afternoon: { time: d.timeFrameTimes?.afternoon, meds: d.medications?.afternoon?.length || 0 },
+        evening: { time: d.timeFrameTimes?.evening, meds: d.medications?.evening?.length || 0 }
+      })))
+      showNotification('No scheduled medications found to dispense.', 'warning')
+      return
+    }
+    
+    const day = currentDays.find(d => d.dayOfWeek === earliest.dayOfWeek)
+    if (!day) {
+      console.log('⚠️ Day not found for dayOfWeek:', earliest.dayOfWeek)
+      return
+    }
+    
+    console.log(`✅ Force dispensing ${day.name} ${TIME_FRAMES[earliest.timeFrame].label}...`)
+    console.log(`📋 Day details:`, {
+      name: day.name,
+      selectedDate: day.selectedDate,
+      timeFrame: earliest.timeFrame,
+      scheduledTime: day.timeFrameTimes[earliest.timeFrame],
+      medications: day.medications[earliest.timeFrame]?.length || 0
+    })
+    
+    showNotification(`Force dispensing ${day.name} ${TIME_FRAMES[earliest.timeFrame].label}...`, 'info')
+    
+    // Call handleDispense with force flag (skip ALL checks - no connection check, no date check, no restrictions)
+    await handleDispense(earliest.dayOfWeek, earliest.timeFrame, true, true)
+  }
+
+  const handleDispense = async (dayOfWeek: number, timeFrame?: 'morning' | 'afternoon' | 'evening', skipTimeWindowCheck: boolean = false, forceDispense: boolean = false) => {
+    // Check Pi connection first (skip for force dispense)
+    if (!forceDispense && !piConnected) {
       showNotification('Not connected to Raspberry Pi! Make sure the server is running.', 'warning')
       return
+    }
+    
+    // For force dispense, silently proceed even if not connected (connection will be checked when sending command)
+    if (forceDispense && !piConnected) {
+      console.log('⚠️ Force dispense: Pi connection status unknown, proceeding anyway')
+      // Don't show notification - just proceed silently
     }
 
     // Declare variables outside try block so they're accessible in catch block
@@ -1043,8 +1779,13 @@ export default function Home() {
     let frameMedications: Medication[] = []
 
     try {
-      const day = days.find(d => d.dayOfWeek === dayOfWeek)
-      if (!day) return
+      // Use ref for latest state when force dispense (avoids stale closure issues)
+      const currentDays = forceDispense ? (daysRef.current.length > 0 ? daysRef.current : days) : days
+      const day = currentDays.find(d => d.dayOfWeek === dayOfWeek)
+      if (!day) {
+        console.log('⚠️ Day not found for dayOfWeek:', dayOfWeek, 'forceDispense:', forceDispense)
+        return
+      }
       
       const currentTime = new Date(getPhilippineTime())
       const currentHour = currentTime.getHours()
@@ -1054,7 +1795,6 @@ export default function Home() {
       
       // If timeFrame provided, dispense that bundle; otherwise find next available bundle
       targetTimeFrame = timeFrame || null
-      let isEarlyDispense = false
       
       // TEMPORARILY DISABLED FOR TESTING - Check if this time frame was already dispensed (ONCE PER TIME FRAME LIMIT)
       // const dispensedFrames = day.dispensedTimeFrames || []
@@ -1089,17 +1829,19 @@ export default function Home() {
         // If all time frames are dispensed, move to next day (Saturday <-> Sunday)
         if (!targetTimeFrame) {
           const nextDayOfWeek = dayOfWeek === 6 ? 0 : 6 // Saturday -> Sunday, Sunday -> Saturday
-          const nextDay = days.find(d => d.dayOfWeek === nextDayOfWeek)
+          const nextDay = currentDays.find(d => d.dayOfWeek === nextDayOfWeek)
           if (nextDay) {
             showNotification(`All time frames for ${day.name} have been dispensed. Moving to ${nextDay.name}.`, 'info')
             // Reset current day's dispensed frames and move to next day
-            setDays(prevDays => 
-              prevDays.map(d => 
+            setDays(prevDays => {
+              const updated = prevDays.map(d => 
                 d.dayOfWeek === dayOfWeek 
                   ? { ...d, dispensedTimeFrames: [] }
                   : d
               )
-            )
+              daysRef.current = updated // Update ref
+              return updated
+            })
             // Try to dispense morning of next day
             if (nextDay.medications.morning.length > 0) {
               await handleDispense(nextDayOfWeek, 'morning')
@@ -1117,83 +1859,85 @@ export default function Home() {
         return
       }
       
-      // Define frameInfo for use in alerts (even though checks are disabled)
+      // Check if current time is within the scheduled time frame
       const frameInfo = TIME_FRAMES[targetTimeFrame]
+      const scheduledTime = day.timeFrameTimes[targetTimeFrame]
       
-      // TEMPORARILY DISABLED FOR TESTING - Skip all time frame checks
-      let isInTimeFrame = true // Always allow for testing
-      let isInEarlyWindow = false
-      // isEarlyDispense already declared at line 893
+      if (!scheduledTime) {
+        showNotification(`No time set for ${frameInfo.label}. Please set a time first.`, 'warning')
+        return
+      }
       
-      // ORIGINAL CODE (commented for testing):
-      // const frameInfo = TIME_FRAMES[targetTimeFrame]
-      // const [startHour, startMin] = frameInfo.start.split(':').map(Number)
-      // const startMinutes = startHour * 60 + startMin
-      // const earlyDispenseWindow = startMinutes - 30 // 30 minutes before
-      // 
-      // // Determine if current time is within the time frame or early dispense window
-      // let isInTimeFrame = false
-      // let isInEarlyWindow = false
-      // 
-      // if (targetTimeFrame === 'morning') {
-      //   // Morning: 5:00 (300 min) to 12:00 (720 min)
-      //   isInTimeFrame = currentTimeMinutes >= 300 && currentTimeMinutes <= 720
-      //   // Early window: 30 min before 5:00 = 4:30 (270 min) to 4:59 (299 min)
-      //   isInEarlyWindow = currentTimeMinutes >= 270 && currentTimeMinutes < 300
-      // } else if (targetTimeFrame === 'afternoon') {
-      //   // Afternoon: 12:01 (721 min) to 19:00 (1140 min)
-      //   isInTimeFrame = currentTimeMinutes >= 721 && currentTimeMinutes <= 1140
-      //   // Early window: 30 min before 12:01 = 11:31 (691 min) to 12:00 (720 min)
-      //   isInEarlyWindow = currentTimeMinutes >= 691 && currentTimeMinutes < 721
-      // } else if (targetTimeFrame === 'evening') {
-      //   // Evening: 19:01 (1141 min) to 23:59 (1439 min) OR 0:00 (0 min) to 3:00 (180 min)
-      //   isInTimeFrame = currentTimeMinutes >= 1141 || currentTimeMinutes <= 180
-      //   // Early window: 30 min before 19:01 = 18:31 (1111 min) to 19:00 (1140 min)
-      //   // OR 30 min before 0:00 (wraps around) = 23:30 (1410 min) to 23:59 (1439 min)
-      //   isInEarlyWindow = (currentTimeMinutes >= 1111 && currentTimeMinutes < 1141) || 
-      //                     (currentTimeMinutes >= 1410 && currentTimeMinutes <= 1439)
-      // }
+      // Parse scheduled time
+      const [scheduledHour, scheduledMin] = scheduledTime.split(':').map(Number)
+      const scheduledMinutes = scheduledHour * 60 + scheduledMin
       
-      // TEMPORARILY DISABLED FOR TESTING - Check if trying to dispense a time frame that's already passed (progressive check)
-      // const lastDispensedTime = day.lastDispensedTime
-      // if (lastDispensedTime) {
-      //   const [lastHour, lastMin] = lastDispensedTime.split(':').map(Number)
-      //   const lastMinutes = lastHour * 60 + lastMin
-      //   
-      //   let lastFrame = ''
-      //   if (lastMinutes >= 300 && lastMinutes <= 720) lastFrame = 'morning'
-      //   else if (lastMinutes >= 721 && lastMinutes <= 1140) lastFrame = 'afternoon'
-      //   else if (lastMinutes >= 1141 || lastMinutes <= 180) lastFrame = 'evening'
-      //   
-      //   const frameOrder = { morning: 1, afternoon: 2, evening: 3 }
-      //   // If trying to dispense an earlier time frame that was already done, block it
-      //   if (frameOrder[targetTimeFrame] < frameOrder[lastFrame as keyof typeof frameOrder]) {
-      //     alert(` ${TIME_FRAMES[targetTimeFrame].label} bundle was already dispensed. Next is ${lastFrame === 'morning' ? 'Afternoon' : 'Evening'}.`)
-      //     return
-      //   }
-      // }
+      // Check if current time is within the time frame window (30 min before to 30 min after scheduled time)
+      // This is only for showing confirmation - we don't block dispensing
+      const timeWindowStart = scheduledMinutes - 30
+      const timeWindowEnd = scheduledMinutes + 30
       
-      // TEMPORARILY DISABLED FOR TESTING - Skip all restrictions
-      // Original code commented out - allow dispensing anytime for SMS testing
-      // if (!isInTimeFrame && !isInEarlyWindow) {
-      //   const nextFrameStart = frameInfo.start
-      //   alert(` ${TIME_FRAMES[targetTimeFrame].label} time frame hasn't started yet.\n\nTime frame: ${frameInfo.start} - ${frameInfo.end}\nCurrent time: ${currentTimeStr}\n\nYou can dispense early starting 30 minutes before the time frame (30 min before ${nextFrameStart}).`)
-      //   return
-      // }
-      // 
-      // if (isInEarlyWindow) {
-      //   isEarlyDispense = true
-      //   const confirmMessage = ` Early Dispense Warning\n\nYou are dispensing ${TIME_FRAMES[targetTimeFrame].label} bundle 30 minutes before the time frame starts.\n\nTime frame: ${frameInfo.start} - ${frameInfo.end}\nCurrent time: ${currentTimeStr}\n\nAre you sure you want to dispense early?`
-      //   if (!confirm(confirmMessage)) {
-      //     return // User cancelled
-      //   }
-      // }
+      // Handle time window that wraps around midnight
+      let isInTimeWindow = false
+      if (timeWindowStart < 0) {
+        // Window wraps around midnight (e.g., 23:30 - 00:30)
+        isInTimeWindow = currentTimeMinutes >= (1440 + timeWindowStart) || currentTimeMinutes <= timeWindowEnd
+      } else if (timeWindowEnd >= 1440) {
+        // Window extends past midnight (e.g., 23:30 - 00:30)
+        isInTimeWindow = currentTimeMinutes >= timeWindowStart || currentTimeMinutes <= (timeWindowEnd - 1440)
+      } else {
+        // Normal window within same day
+        isInTimeWindow = currentTimeMinutes >= timeWindowStart && currentTimeMinutes <= timeWindowEnd
+      }
+      
+      // Show confirmation dialog if outside time window (but don't block - user can still confirm)
+      // Skip this check if force dispense is enabled
+      if (!isInTimeWindow && !skipTimeWindowCheck && !forceDispense) {
+        const confirmed = await showConfirm('OUTSIDE THE TIMEFRAME - ARE YOU SURE?')
+        if (!confirmed) {
+          return
+        }
+      }
+      
+      // Check if dispensing early (before scheduled time)
+      let isEarlyDispense = false
+      if (currentTimeMinutes < scheduledMinutes) {
+        isEarlyDispense = true
+      }
       
       // Get all medications in the target time frame (bundle)
       frameMedications = day.medications[targetTimeFrame] || []
       
       if (frameMedications.length === 0) {
         showNotification(`No medications in ${TIME_FRAMES[targetTimeFrame].label} to dispense!`, 'warning')
+        return
+      }
+      
+      // Check if the date matches today - only allow dispensing if date is today
+      // Skip this check if force dispense is enabled
+      if (!forceDispense && !isDateToday(day.selectedDate)) {
+        showNotification(`Cannot dispense - date must be today. Current date: ${day.selectedDate || 'not set'}. Please sync the date first.`, 'warning')
+        return
+      }
+      
+      // Progressive dispense check: can't dispense later time frames if earlier ones with schedules haven't been dispensed
+      // Skip this check if force dispense is enabled
+      if (!forceDispense && hasUndispensedEarlierTimeFrames(day, targetTimeFrame, lastServo1Angle)) {
+        const earlierFrames = []
+        const frameOrder: ('morning' | 'afternoon' | 'evening')[] = ['morning', 'afternoon', 'evening']
+        const targetIndex = frameOrder.indexOf(targetTimeFrame)
+        
+        for (let i = 0; i < targetIndex; i++) {
+          const earlierFrame = frameOrder[i]
+          const hasMedications = (day.medications[earlierFrame] || []).length > 0
+          const hasScheduledTime = day.timeFrameTimes[earlierFrame] !== null && day.timeFrameTimes[earlierFrame] !== ''
+          
+          if (hasMedications && hasScheduledTime && !isTimeFrameDispensedByAngle(lastServo1Angle, dayOfWeek, earlierFrame)) {
+            earlierFrames.push(TIME_FRAMES[earlierFrame].label)
+          }
+        }
+        
+        showNotification(`Previous medicine hasn't been dispensed yet. Please dispense ${earlierFrames.join(' and ')} first.`, 'warning')
         return
       }
       
@@ -1208,86 +1952,130 @@ export default function Home() {
         )
       )
 
-      // Dispense ALL medications in the time frame bundle (servo spins once)
-      const response = await dispenseToPi('servo1', medicationNames)
+      // Calculate target angle for this specific time frame
+      // Each time frame moves directly to its designated angle
+      // Saturday: Morning=30°, Afternoon=60°, Evening=90°
+      // Sunday: Morning=120°, Afternoon=150°, Evening=180°
+      const targetAngle = getAngleForTimeFrame(dayOfWeek, targetTimeFrame)
+      const currentAngle = lastServo1Angle ?? 0
+      
+      console.log(`🎯 Time frame dispense: ${day.name} ${TIME_FRAMES[targetTimeFrame].label} → Target angle: ${targetAngle}° (Current: ${currentAngle}°)`)
+      
+      // Move directly to the target angle for this time frame
+      // If already at target, it will stay there (server handles this)
+      const response = await dispenseToPi('servo1', medicationNames, targetAngle, day.selectedDate || undefined, scheduledTime, targetTimeFrame)
       console.log('✅ Manual dispense bundle response:', response)
+      
+      // Update last known servo1 angle from response
+      if (response?.servo1_angle !== undefined) {
+        setLastServo1Angle(response.servo1_angle)
+      }
       
       // Check if servo1 is at 180° (needs confirmation to reset)
       const isAt180 = response?.servo1_at_180 === true
+      const servo2Ready = response?.servo2_ready === true
+      const requiresConfirmation = response?.requires_confirmation === true
       
-      // Show confirmation dialog after successful dispense
-      if (response?.status === 'success') {
-        console.log('✅ Dispense successful, showing confirmation dialog')
-        if (isAt180) {
-          console.log('🔄 Servo1 is at 180° - will reset to 0° if confirmed')
-        }
-        
-        // Create dialog config
-        const dialogConfig = {
-          isAt180: isAt180,
-          onConfirm: async () => {
-            console.log('✅ User clicked YES')
-            // Clear all timeouts when user manually confirms
-            if (servo2DialogTimeoutRef.current) {
-              clearTimeout(servo2DialogTimeoutRef.current)
-              servo2DialogTimeoutRef.current = null
-            }
-            if (servo2DialogReopenTimeoutRef.current) {
-              clearTimeout(servo2DialogReopenTimeoutRef.current)
-              servo2DialogReopenTimeoutRef.current = null
-            }
-            setServo2ConfirmDialog(null)
-            servo2DialogConfigRef.current = null
-            try {
-              const servo2Response = await confirmServo2Dispense()
-              if (servo2Response?.status === 'success') {
-                if (isAt180 && servo2Response?.servo1_reset) {
-                  showNotification('Medicine dispensed! Servo1 reset to 0° and Servo2 completed.', 'success')
-                } else {
-                  showNotification('Medicine dispensed successfully!', 'success')
-                }
+      console.log('🔍 Dispense response details:', {
+        status: response?.status,
+        servo2_ready: servo2Ready,
+        requires_confirmation: requiresConfirmation,
+        servo1_at_180: isAt180,
+        showAfterNextDispense: servo2DialogState.showAfterNextDispense
+      })
+      
+      // Send SMS notification BEFORE showing confirmation dialog
+      // Format: "The [medicines] for [timeframe] is/are ready to dispense"
+      if (response?.status === 'success' && !forceDispense) {
+        try {
+          const { data: { session } } = await supabase.auth.getSession()
+          if (session?.user && piConnected) {
+            // Get owner's phone number from profiles table
+            // (caregivers use owner's profile for SMS notifications)
+            const effectiveUserIdForSMS = isOwner ? session.user.id : (ownerUserId || session.user.id)
+            const { data: profileData } = await supabase
+              .from('profiles')
+              .select('phone_number')
+              .eq('id', effectiveUserIdForSMS)
+              .single()
+
+            if (profileData?.phone_number) {
+              // Format message: "The [medicines] for [timeframe] is/are ready to dispense"
+              const medicationCount = frameMedications.length
+              const medicationList = medicationNames
+              const timeframeLabel = TIME_FRAMES[targetTimeFrame].label
+              const isAre = medicationCount === 1 ? 'is' : 'are'
+              
+              const smsMessage = `The ${medicationList} for ${timeframeLabel} ${isAre} ready to dispense.`
+              
+              // Send SMS via Pi WebSocket (SIMCOM module)
+              console.log(`📱 Attempting to send SMS to ${profileData.phone_number}: "${smsMessage}"`)
+              const smsResult = await sendSmsViaPi([profileData.phone_number], smsMessage)
+              console.log('📱 SMS result:', smsResult)
+              
+              if (smsResult?.success || smsResult?.status === 'queued') {
+                console.log(`✅ SMS notification queued/sent: "${smsMessage}"`)
               } else {
-                showNotification('Medicine dispense failed', 'error')
+                console.warn('⚠️ SMS notification failed:', smsResult)
               }
-            } catch (error: any) {
-              console.error('❌ Error:', error)
-              showNotification(`Error: ${error.message || 'Failed'}`, 'error')
-            }
-          },
-          onCancel: () => {
-            console.log('❌ User clicked NO')
-            // Clear all timeouts when user manually cancels
-            if (servo2DialogTimeoutRef.current) {
-              clearTimeout(servo2DialogTimeoutRef.current)
-              servo2DialogTimeoutRef.current = null
-            }
-            if (servo2DialogReopenTimeoutRef.current) {
-              clearTimeout(servo2DialogReopenTimeoutRef.current)
-              servo2DialogReopenTimeoutRef.current = null
-            }
-            setServo2ConfirmDialog(null)
-            servo2DialogConfigRef.current = null
-            if (isAt180) {
-              showNotification('Cancelled. Servo1 will stay at 180° and Servo2 will not move.', 'info')
             } else {
-              showNotification('Medicine dispense cancelled', 'info')
+              console.log('ℹ️ No phone number found in profile, skipping SMS notification')
             }
           }
+        } catch (smsError) {
+          console.error('Error sending SMS notification:', smsError)
+          // Don't block dispense if SMS fails
         }
-        
-        // Store config for reopening
-        servo2DialogConfigRef.current = dialogConfig
-        
-        // Set dialog
-        setServo2ConfirmDialog(dialogConfig)
-        
-        // Setup auto-close/reopen cycle: close after 2 min, reopen after 3 min total
-        setupServo2DialogAutoCycle()
+      }
+      
+      // Show confirmation dialog after successful dispense
+      // Skip dialog if force dispense is enabled
+      if (response?.status === 'success' && !forceDispense) {
+        // Check if we should show dialog based on state
+        if (servo2DialogState.showAfterNextDispense) {
+          console.log('✅ Dispense successful, showing confirmation dialog')
+          if (isAt180) {
+            console.log('🔄 Servo1 is at 180° - will reset to 0° if confirmed')
+          }
+          
+          // Create dialog config with schedule info for LCD tracking
+          const dialogConfig = createServo2DialogConfig(isAt180, () => {}, day.selectedDate || undefined, scheduledTime, targetTimeFrame)
+          
+          // Set dialog (does NOT auto-close - user must click Yes or No or press button)
+          setServo2ConfirmDialog(dialogConfig)
+          console.log('✅ Dialog set - should be visible now')
+        } else {
+          console.log('⏭️ Skipping dialog - waiting for timeout or next dispense (user clicked NO twice)')
+        }
+      } else if (response?.status === 'success' && forceDispense) {
+        console.log('🔧 Force dispense - skipping dialog, servo2 will move automatically')
+        // For force dispense, automatically trigger servo2 movement after 1 second
+        setTimeout(async () => {
+          console.log('🎯 Force dispense: Automatically moving servo2 after 1 second delay')
+          try {
+            const servo2Response = await confirmServo2Dispense(day.selectedDate || undefined, scheduledTime, targetTimeFrame || undefined)
+            if (servo2Response?.status === 'success') {
+              if (isAt180 && servo2Response?.servo1_reset) {
+                setLastServo1Angle(0)
+                showNotification('Force dispense complete! App reset - ready for next cycle.', 'success')
+              } else {
+                showNotification('Force dispense complete!', 'success')
+              }
+            } else {
+              showNotification('Force dispense failed', 'error')
+            }
+          } catch (error: any) {
+            console.error('❌ Error in force dispense servo2:', error)
+            showNotification(`Error: ${error.message || 'Failed'}`, 'error')
+          }
+        }, 1000)
+      } else {
+        console.log('⚠️ Dispense failed or no response:', response)
       }
 
           // Update last dispensed time and mark this time frame as dispensed
-          setDays(prevDays => 
-            prevDays.map(d => {
+          setDays(prevDays => {
+            const updated = prevDays.map(d => {
               if (d.dayOfWeek === dayOfWeek && targetTimeFrame) {
                 const updatedDispensedFrames = [...(d.dispensedTimeFrames || []), targetTimeFrame]
                 return { 
@@ -1299,89 +2087,45 @@ export default function Home() {
               }
               return d
             })
-          )
+            daysRef.current = updated // Update ref
+            return updated
+          })
 
-      // Check if servo2 confirmation is required (after servo1 dispenses)
-      // ALWAYS show dialog after successful servo1 dispense (servo2 integration)
-      console.log('🔍 Checking servo2 dialog trigger...')
-      console.log('🔍 Response object:', response)
-      console.log('🔍 Response status:', response?.status)
-      console.log('🔍 Response type:', typeof response)
-      console.log('🔍 Response keys:', response ? Object.keys(response) : 'null')
-      
-      // Show dialog if status is success (servo2 integration should always happen)
-      if (response && response.status === 'success') {
-        console.log('✅ Status is success - showing servo2 dialog')
-        console.log('🎯 Servo1 dispensed, showing medicine dispense confirmation dialog')
-        console.log('✅ Dialog will appear now')
-        
-        // Set dialog state immediately
-        setServo2ConfirmDialog({
-          onConfirm: async () => {
-            console.log('✅ User clicked YES - confirming servo2 dispense')
-            setServo2ConfirmDialog(null)
-            try {
-              // User said YES - move servo2 from 0° to 90°, wait 2s, then back to 0°
-              const servo2Response = await confirmServo2Dispense()
-              console.log('✅ Servo2 dispense confirmed:', servo2Response)
-              if (servo2Response?.status === 'success') {
-                showNotification('Medicine dispensed successfully!', 'success')
-              } else {
-                showNotification('Medicine dispense failed', 'error')
-              }
-            } catch (error: any) {
-              console.error('❌ Error confirming servo2 dispense:', error)
-              showNotification(`Error: ${error.message || 'Failed to dispense medicine'}`, 'error')
-            }
-          },
-          onCancel: () => {
-            console.log('❌ User clicked NO - cancelling servo2 dispense')
-            // User said NO - nothing happens, servo2 stays at 0°
-            setServo2ConfirmDialog(null)
-            showNotification('Medicine dispense cancelled', 'info')
-          }
-        })
-        
-        // Double-check state was set
-        setTimeout(() => {
-          console.log('🔍 Verifying dialog state was set...')
-        }, 200)
-      } else {
-        console.log('⚠️ Dialog NOT showing!')
-        console.log('⚠️ Response:', response)
-        console.log('⚠️ Response status:', response?.status)
-        console.log('⚠️ Full response object:', JSON.stringify(response, null, 2))
-        console.log('⚠️ Condition check:', response && response.status === 'success')
-      }
 
-      // Log manual dispense success for each medication in bundle
+      // Log dispense success for each medication in bundle
       try {
         const { data: { session } } = await supabase.auth.getSession()
         if (session?.user) {
+          const actionType = skipTimeWindowCheck ? 'auto' : 'manual'
+          const actionLabel = skipTimeWindowCheck ? 'Auto' : (isEarlyDispense ? 'Early Manual' : 'Manual')
           for (const med of frameMedications) {
+            // Use owner's user_id for dispense history (caregiver dispenses are recorded under owner's account)
+            const effectiveUserIdForHistory = isOwner ? session.user.id : (ownerUserId || session.user.id)
             await supabase.from('dispense_history').insert({
-              user_id: session.user.id,
+              user_id: effectiveUserIdForHistory,
               servo_number: 1, // Always servo1
               medication_name: med.medication_name,
-              action: 'manual',
+              action: actionType,
               status: 'success',
-              notes: `${isEarlyDispense ? 'Early ' : ''}Manual dispense bundle from ${day?.name || 'dashboard'} at ${currentTimeStr} (${targetTimeFrame}) - ${medicationNames}`
+              notes: `${actionLabel} dispense bundle from ${day?.name || 'dashboard'} at ${currentTimeStr} (${targetTimeFrame}) - ${medicationNames}`
             })
           }
         }
       } catch (logErr) {
-        console.error('Log manual-dispense error:', logErr)
+        console.error('Log dispense error:', logErr)
       }
 
       // Send SMS notification via Pi (SIMCOM module) - Multiple recipients
       try {
         const { data: { session } } = await supabase.auth.getSession()
         if (session?.user && piConnected) {
-          // Get user's phone number and emergency contact from profiles table
+          // Get owner's phone number and emergency contact from profiles table
+          // (caregivers use owner's profile for SMS notifications)
+          const effectiveUserIdForSMS = isOwner ? session.user.id : (ownerUserId || session.user.id)
           const { data: profileData } = await supabase
             .from('profiles')
             .select('phone_number, emergency_contact')
-            .eq('id', session.user.id)
+            .eq('id', effectiveUserIdForSMS)
             .single()
 
           // Collect all phone numbers to send SMS to
@@ -1411,12 +2155,14 @@ export default function Home() {
                         const smsMessage = `${medicationNames}`
             
             // Send SMS via Pi WebSocket (SIMCOM module) to all recipients
+            console.log(`📱 Attempting to send SMS to ${phoneNumbers.length} recipient(s): "${smsMessage}"`)
             const smsResult = await sendSmsViaPi(phoneNumbers, smsMessage)
+            console.log('📱 SMS result:', smsResult)
             
-            if (smsResult.success) {
-              console.log(` SMS notification sent via SIMCOM to ${phoneNumbers.length} recipient(s):`, smsResult)
+            if (smsResult?.success || smsResult?.status === 'queued') {
+              console.log(`✅ SMS notification queued/sent to ${phoneNumbers.length} recipient(s):`, smsResult)
             } else {
-              console.warn(' SMS notification failed:', smsResult)
+              console.warn('⚠️ SMS notification failed:', smsResult)
             }
           } else {
             console.log('ℹ️ No phone numbers found in profile, skipping SMS notification')
@@ -1431,45 +2177,52 @@ export default function Home() {
 
       // Reset status after 3 seconds
       setTimeout(() => {
-        setDays(prevDays => 
-          prevDays.map(d => 
+        setDays(prevDays => {
+          const updated = prevDays.map(d => 
             d.dayOfWeek === dayOfWeek 
               ? { ...d, status: 'ready' }
               : d
           )
-        )
+          daysRef.current = updated // Update ref
+          return updated
+        })
       }, 3000)
 
       } catch (error: any) {
       console.error('Error dispensing bundle:', error)
       showNotification(`Error: ${error.message}`, 'error')
-      // Log manual dispense error
+      // Log dispense error
       try {
         const { data: { session } } = await supabase.auth.getSession()
         if (session?.user && frameMedications.length > 0) {
+          const actionType = skipTimeWindowCheck ? 'auto' : 'manual'
           for (const med of frameMedications) {
+            // Use owner's user_id for dispense history (caregiver dispenses are recorded under owner's account)
+            const effectiveUserIdForHistory = isOwner ? session.user.id : (ownerUserId || session.user.id)
             await supabase.from('dispense_history').insert({
-              user_id: session.user.id,
+              user_id: effectiveUserIdForHistory,
               servo_number: 1, // Always servo1
               medication_name: med.medication_name,
-              action: 'manual',
+              action: actionType,
               status: 'error',
-              notes: error instanceof Error ? error.message : (error?.message || 'Manual dispense bundle error')
+              notes: error instanceof Error ? error.message : (error?.message || `${actionType} dispense bundle error`)
             })
           }
         }
       } catch (logErr) {
-        console.error('Log manual-dispense error (insert) failed:', logErr)
+        console.error('Log dispense error (insert) failed:', logErr)
       }
       
       // Reset status on error
-      setDays(prevDays => 
-        prevDays.map(d => 
+      setDays(prevDays => {
+        const updated = prevDays.map(d => 
           d.dayOfWeek === dayOfWeek 
             ? { ...d, status: 'ready' }
             : d
         )
-      )
+        daysRef.current = updated // Update ref
+        return updated
+      })
     }
   }
 
@@ -1517,15 +2270,28 @@ export default function Home() {
       const session = await refreshSessionIfNeeded()
       if (!session) return
 
-      let effectiveUserId = ownerUserId || session.user.id
-      if (!isOwner && effectiveUserId === session.user.id && ownerUserId) {
-        effectiveUserId = ownerUserId
+      // Always use ownerUserId for caregivers, current user ID for owners
+      // This ensures caregivers save to the owner's account
+      let effectiveUserId = isOwner ? session.user.id : (ownerUserId || session.user.id)
+      
+      // Safety check: if we're a caregiver but ownerUserId is not set, try to resolve it
+      if (!isOwner && !ownerUserId) {
+        console.log('⚠️ Caregiver detected but ownerUserId not set, resolving...')
+        const resolved = await resolveOwner()
+        if (resolved) {
+          effectiveUserId = resolved.ownerUserId
+        }
       }
+      
+      console.log('💾 Saving with effectiveUserId:', effectiveUserId, '(isOwner:', isOwner, ', ownerUserId:', ownerUserId, ')')
 
       const dayOfWeek = editingTimeFrameTime.dayOfWeek
       const timeFrame = editingTimeFrameTime.timeFrame
       const dayName = getDayName(dayOfWeek)
       const frameInfo = TIME_FRAMES[timeFrame as keyof typeof TIME_FRAMES]
+      
+      // UI day_of_week matches database day_of_week (6=Saturday, 0=Sunday)
+      const dbDayOfWeek = dayOfWeek // Direct mapping: 6 = Saturday, 0 = Sunday
 
       // Validate time is within time frame range
       const medTime = timeFrameTime.slice(0, 5) // HH:MM
@@ -1537,16 +2303,18 @@ export default function Home() {
       const [endHour, endMin] = frameInfo.end.split(':').map(Number)
       const endMinutes = endHour * 60 + endMin
       
-      // Handle evening frame that wraps around midnight
+      // Handle evening frame that wraps around midnight (16:05 to 00:00)
       let isInRange = false
       if (timeFrame === 'evening') {
-        isInRange = medMinutes >= 1141 || medMinutes <= 180
+        // Evening: 16:05 (965 minutes) to 00:00 (0 minutes, wraps around)
+        // Valid times: 16:05 (965) to 23:59 (1439) OR exactly 00:00 (0)
+        isInRange = medMinutes >= 965 || medMinutes === 0
       } else {
         isInRange = medMinutes >= startMinutes && medMinutes <= endMinutes
       }
       
       if (!isInRange) {
-        showNotification(`Invalid Time: "${timeFrameTime.slice(0, 5)}" is outside the allowed range for ${frameInfo.label}. Allowed time range: ${frameInfo.start} - ${frameInfo.end}`, 'error')
+        showNotification('Invalid time, try again', 'error')
         return
       }
 
@@ -1555,7 +2323,7 @@ export default function Home() {
         .from('day_config')
         .select('id')
         .eq('user_id', effectiveUserId)
-        .eq('day_of_week', dayOfWeek)
+        .eq('day_of_week', dbDayOfWeek) // Use mapped value
         .maybeSingle()
 
       let dayConfigId
@@ -1624,14 +2392,27 @@ export default function Home() {
       const session = await refreshSessionIfNeeded()
       if (!session) return
 
-      let effectiveUserId = ownerUserId || session.user.id
-      if (!isOwner && effectiveUserId === session.user.id && ownerUserId) {
-        effectiveUserId = ownerUserId
+      // Always use ownerUserId for caregivers, current user ID for owners
+      // This ensures caregivers save to the owner's account
+      let effectiveUserId = isOwner ? session.user.id : (ownerUserId || session.user.id)
+      
+      // Safety check: if we're a caregiver but ownerUserId is not set, try to resolve it
+      if (!isOwner && !ownerUserId) {
+        console.log('⚠️ Caregiver detected but ownerUserId not set, resolving...')
+        const resolved = await resolveOwner()
+        if (resolved) {
+          effectiveUserId = resolved.ownerUserId
+        }
       }
+      
+      console.log('💾 Saving with effectiveUserId:', effectiveUserId, '(isOwner:', isOwner, ', ownerUserId:', ownerUserId, ')')
 
       const dayOfWeek = context.dayOfWeek
       const timeFrame = context.timeFrame
       const dayName = getDayName(dayOfWeek)
+      
+      // UI day_of_week matches database day_of_week (6=Saturday, 0=Sunday)
+      const dbDayOfWeek = dayOfWeek // Direct mapping: 6 = Saturday, 0 = Sunday
 
       if (isEditing) {
         // Update existing medication (name only, time is at time frame level)
@@ -1658,7 +2439,7 @@ export default function Home() {
           .from('day_config')
           .select('id')
           .eq('user_id', effectiveUserId)
-          .eq('day_of_week', dayOfWeek)
+          .eq('day_of_week', dbDayOfWeek) // Use mapped value
           .maybeSingle()
 
         let dayConfigId
@@ -1671,7 +2452,7 @@ export default function Home() {
             .from('day_config')
             .insert({
               user_id: effectiveUserId,
-              day_of_week: dayOfWeek,
+              day_of_week: dbDayOfWeek, // Use mapped value (0 or 6)
               medication_name: '', // No single medication name anymore
               is_active: true
             })
@@ -1744,6 +2525,71 @@ export default function Home() {
     }
   }
 
+  const handleDeleteAllMedications = async (dayOfWeek: number, timeFrame: 'morning' | 'afternoon' | 'evening') => {
+    const day = days.find(d => d.dayOfWeek === dayOfWeek)
+    if (!day) return
+    
+    const medications = day.medications[timeFrame]
+    if (medications.length === 0) {
+      showNotification(`No medications in ${TIME_FRAMES[timeFrame].label} to delete`, 'warning')
+      return
+    }
+
+    const confirmed = await showConfirm(`Delete all ${medications.length} medication(s) in ${TIME_FRAMES[timeFrame].label}?`)
+    if (!confirmed) return
+
+    try {
+      const session = await refreshSessionIfNeeded()
+      if (!session) return
+
+      // Always use ownerUserId for caregivers, current user ID for owners
+      // This ensures caregivers save to the owner's account
+      let effectiveUserId = isOwner ? session.user.id : (ownerUserId || session.user.id)
+      
+      // Safety check: if we're a caregiver but ownerUserId is not set, try to resolve it
+      if (!isOwner && !ownerUserId) {
+        console.log('⚠️ Caregiver detected but ownerUserId not set, resolving...')
+        const resolved = await resolveOwner()
+        if (resolved) {
+          effectiveUserId = resolved.ownerUserId
+        }
+      }
+      
+      console.log('💾 Saving with effectiveUserId:', effectiveUserId, '(isOwner:', isOwner, ', ownerUserId:', ownerUserId, ')')
+
+      // UI day_of_week matches database day_of_week (6=Saturday, 0=Sunday)
+      const dbDayOfWeek = dayOfWeek // Direct mapping: 6 = Saturday, 0 = Sunday
+      
+      // Get day_config_id
+      const { data: config } = await supabase
+        .from('day_config')
+        .select('id')
+        .eq('user_id', effectiveUserId)
+        .eq('day_of_week', dbDayOfWeek) // Use mapped value
+        .single()
+
+      if (!config) {
+        showNotification('Day config not found.', 'warning')
+        return
+      }
+
+      // Delete all medications in this time frame
+      const { error } = await supabase
+        .from('time_frame_medications')
+        .delete()
+        .eq('day_config_id', config.id)
+        .eq('time_frame', timeFrame)
+
+      if (error) throw error
+
+      await fetchDayData()
+      showNotification(`All ${medications.length} medication(s) removed from ${TIME_FRAMES[timeFrame].label}!`, 'success')
+    } catch (error: any) {
+      console.error('Error deleting all medications:', error)
+      showNotification(`Error: ${error?.message || 'Unknown error'}`, 'error')
+    }
+  }
+
   const handleCopyToOtherFrames = async (dayOfWeek: number, sourceTimeFrame: 'morning' | 'afternoon' | 'evening') => {
     const day = days.find(d => d.dayOfWeek === dayOfWeek)
     if (!day) return
@@ -1763,17 +2609,30 @@ export default function Home() {
       const session = await refreshSessionIfNeeded()
       if (!session) return
 
-      let effectiveUserId = ownerUserId || session.user.id
-      if (!isOwner && effectiveUserId === session.user.id && ownerUserId) {
-        effectiveUserId = ownerUserId
+      // Always use ownerUserId for caregivers, current user ID for owners
+      // This ensures caregivers save to the owner's account
+      let effectiveUserId = isOwner ? session.user.id : (ownerUserId || session.user.id)
+      
+      // Safety check: if we're a caregiver but ownerUserId is not set, try to resolve it
+      if (!isOwner && !ownerUserId) {
+        console.log('⚠️ Caregiver detected but ownerUserId not set, resolving...')
+        const resolved = await resolveOwner()
+        if (resolved) {
+          effectiveUserId = resolved.ownerUserId
+        }
       }
+      
+      console.log('💾 Saving with effectiveUserId:', effectiveUserId, '(isOwner:', isOwner, ', ownerUserId:', ownerUserId, ')')
 
+      // UI day_of_week matches database day_of_week (6=Saturday, 0=Sunday)
+      const dbDayOfWeek = dayOfWeek // Direct mapping: 6 = Saturday, 0 = Sunday
+      
       // Get day_config_id
       const { data: config } = await supabase
         .from('day_config')
         .select('id')
         .eq('user_id', effectiveUserId)
-        .eq('day_of_week', dayOfWeek)
+        .eq('day_of_week', dbDayOfWeek) // Use mapped value
         .single()
 
       if (!config) {
@@ -1892,7 +2751,7 @@ export default function Home() {
               </span>
             </div>
 
-            {/* Date Picker */}
+            {/* Editable Date Display */}
             <div className="mb-3 sm:mb-4">
               <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-1">
                 Schedule Date:
@@ -1900,35 +2759,81 @@ export default function Home() {
               <input
                 type="date"
                 value={day.selectedDate || ''}
-                onChange={(e) => {
+                onChange={async (e) => {
                   const newDate = e.target.value
-                  const storageKey = `pillpal_selectedDate_${day.dayOfWeek}`
                   if (newDate) {
-                    localStorage.setItem(storageKey, newDate)
-                  } else {
-                    localStorage.removeItem(storageKey)
-                  }
-                  setDays(prevDays =>
-                    prevDays.map(d =>
-                      d.dayOfWeek === day.dayOfWeek
-                        ? { ...d, selectedDate: newDate || null }
-                        : d
-                    )
-                  )
-                  if (newDate) {
-                    showNotification(`${day.name} scheduled for ${newDate}`, 'success')
-                  } else {
-                    showNotification(`${day.name} date cleared`, 'info')
+                    // Update state immediately
+                    // Calculate day name from newDate
+                    let newDayName = day.name
+                    if (newDate) {
+                      try {
+                        const dateObj = new Date(newDate + 'T00:00:00')
+                        const dayOfWeekFromDate = dateObj.getDay() // 0 = Sunday, 6 = Saturday
+                        newDayName = getDayName(dayOfWeekFromDate)
+                      } catch (e) {
+                        // If date parsing fails, keep current name
+                        newDayName = day.name
+                      }
+                    }
+                    
+                    setDays(prevDays => {
+                      const updated = prevDays.map(d =>
+                        d.dayOfWeek === day.dayOfWeek
+                          ? { ...d, selectedDate: newDate, name: newDayName }
+                          : d
+                      )
+                      daysRef.current = updated // Update ref
+                      return updated
+                    })
+                    
+                    // Save to database so it syncs between patient and caregiver
+                    try {
+                      const { data: { session } } = await supabase.auth.getSession()
+                      if (!session) return
+                      
+                      const effectiveUserId = isOwner ? session.user.id : (ownerUserId || session.user.id)
+                      
+                      // Find the day_config for this day
+                      const { data: dayConfig } = await supabase
+                        .from('day_config')
+                        .select('id')
+                        .eq('user_id', effectiveUserId)
+                        .eq('day_of_week', day.dayOfWeek)
+                        .maybeSingle()
+                      
+                      if (dayConfig) {
+                        // Update existing day_config
+                        await supabase
+                          .from('day_config')
+                          .update({ 
+                            selected_date: newDate,
+                            updated_at: new Date().toISOString()
+                          })
+                          .eq('id', dayConfig.id)
+                        console.log(`💾 Saved date ${newDate} to database for ${day.name}`)
+                      } else {
+                        // Create new day_config with the date
+                        await supabase
+                          .from('day_config')
+                          .insert({
+                            user_id: effectiveUserId,
+                            day_of_week: day.dayOfWeek,
+                            medication_name: '',
+                            is_active: false,
+                            selected_date: newDate
+                          })
+                        console.log(`💾 Created day_config with date ${newDate} for ${day.name}`)
+                      }
+                    } catch (error) {
+                      console.error('Error saving date to database:', error)
+                    }
                   }
                 }}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm sm:text-base"
-                min={new Date().toISOString().split('T')[0]}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm sm:text-base text-gray-700 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition"
               />
-              {day.selectedDate && (
-                <p className="text-xs text-gray-600 mt-1">
-                  Scheduled: {new Date(day.selectedDate).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
-                </p>
-              )}
+              <p className="text-xs text-gray-500 mt-1">
+                Date is automatically synced with current day, but you can edit it
+              </p>
             </div>
 
             {/* Time Frames with Multiple Medications - Enhanced UI */}
@@ -1974,8 +2879,17 @@ export default function Home() {
                       <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
                         {/* Medication List - Each medication as a row */}
                         <div className="p-2 sm:p-3 border-b border-gray-100">
-                          <div className="mb-2">
+                          <div className="mb-2 flex items-center justify-between">
                             <span className="text-xs text-gray-500 font-medium">Medications:</span>
+                            {medications.length > 0 && (
+                              <button
+                                onClick={() => handleDeleteAllMedications(day.dayOfWeek, timeFrame)}
+                                className="text-xs px-2 py-1 bg-red-500 text-white rounded-md hover:bg-red-600 active:bg-red-700 transition font-medium shadow-sm"
+                                title="Delete all medications"
+                              >
+                                Delete All
+                              </button>
+                            )}
                           </div>
                           <div className="space-y-2">
                             {medications.map((med) => (
@@ -2043,18 +2957,136 @@ export default function Home() {
                           )}
                         </div>
                         {/* Action Buttons - Compact */}
-                        <div className="p-2 sm:p-2.5 flex gap-2 border-t border-gray-100">
-                          <button
-                            onClick={() => handleDispense(day.dayOfWeek, timeFrame)}
-                            disabled={!piConnected}
-                            className="flex-1 px-3 py-2 bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-lg hover:from-green-600 hover:to-emerald-600 transition shadow-sm font-semibold disabled:bg-gray-300 disabled:cursor-not-allowed text-xs sm:text-sm"
-                            title={`Dispense all ${medications.length} medication(s) in ${frameInfo.label} bundle`}
+                        <div className="p-2 sm:p-2.5 flex gap-1 border-t border-gray-100">
+                          <div 
+                            className="flex-1 relative min-w-0"
+                            onMouseDown={(e) => {
+                              const buttonKey = `${day.dayOfWeek}-${timeFrame}`
+                              console.log('🔘 Mouse down on dispense button wrapper:', buttonKey)
+                              holdCompletedRef.current.delete(buttonKey)
+                              
+                              // Clear any existing timer for this button
+                              const existingTimer = holdTimersRef.current.get(buttonKey)
+                              if (existingTimer) {
+                                clearTimeout(existingTimer)
+                              }
+                              
+                              // Start new timer
+                              console.log('⏱️ Starting 2-second hold timer for:', buttonKey)
+                              const timer = setTimeout(() => {
+                                console.log('✅ 2-second hold completed - triggering force dispense')
+                                holdCompletedRef.current.add(buttonKey)
+                                handleForceDispense()
+                                holdTimersRef.current.delete(buttonKey)
+                              }, 2000) // 2 seconds
+                              
+                              holdTimersRef.current.set(buttonKey, timer)
+                            }}
+                            onMouseUp={() => {
+                              const buttonKey = `${day.dayOfWeek}-${timeFrame}`
+                              const timer = holdTimersRef.current.get(buttonKey)
+                              if (timer) {
+                                clearTimeout(timer)
+                                holdTimersRef.current.delete(buttonKey)
+                              }
+                            }}
+                            onMouseLeave={() => {
+                              const buttonKey = `${day.dayOfWeek}-${timeFrame}`
+                              const timer = holdTimersRef.current.get(buttonKey)
+                              if (timer) {
+                                clearTimeout(timer)
+                                holdTimersRef.current.delete(buttonKey)
+                              }
+                              holdCompletedRef.current.delete(buttonKey)
+                            }}
+                            onTouchStart={(e) => {
+                              const buttonKey = `${day.dayOfWeek}-${timeFrame}`
+                              console.log('🔘 Touch start on dispense button wrapper:', buttonKey)
+                              holdCompletedRef.current.delete(buttonKey)
+                              
+                              // Clear any existing timer for this button
+                              const existingTimer = holdTimersRef.current.get(buttonKey)
+                              if (existingTimer) {
+                                clearTimeout(existingTimer)
+                              }
+                              
+                              // Start new timer
+                              console.log('⏱️ Starting 2-second hold timer for:', buttonKey)
+                              const timer = setTimeout(() => {
+                                console.log('✅ 2-second hold completed - triggering force dispense')
+                                holdCompletedRef.current.add(buttonKey)
+                                handleForceDispense()
+                                holdTimersRef.current.delete(buttonKey)
+                              }, 2000) // 2 seconds
+                              
+                              holdTimersRef.current.set(buttonKey, timer)
+                            }}
+                            onTouchEnd={() => {
+                              const buttonKey = `${day.dayOfWeek}-${timeFrame}`
+                              const timer = holdTimersRef.current.get(buttonKey)
+                              if (timer) {
+                                clearTimeout(timer)
+                                holdTimersRef.current.delete(buttonKey)
+                              }
+                            }}
                           >
-                            Dispense ({medications.length})
+                            <button
+                              onClick={() => {
+                                const buttonKey = `${day.dayOfWeek}-${timeFrame}`
+                                // If hold was completed, don't do normal click
+                                if (holdCompletedRef.current.has(buttonKey)) {
+                                  holdCompletedRef.current.delete(buttonKey)
+                                  return
+                                }
+                                handleDispense(day.dayOfWeek, timeFrame)
+                              }}
+                            disabled={
+                              !piConnected || 
+                              medications.length === 0 || 
+                              !day.timeFrameTimes[timeFrame] || 
+                              !isDateToday(day.selectedDate)
+                            }
+                            className={`w-full px-3 py-2 rounded-lg transition shadow-sm font-semibold text-xs sm:text-sm ${
+                              !piConnected || 
+                              medications.length === 0 || 
+                              !day.timeFrameTimes[timeFrame] || 
+                              !isDateToday(day.selectedDate)
+                                ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                                : 'bg-gradient-to-r from-green-500 to-emerald-500 text-white hover:from-green-600 hover:to-emerald-600'
+                            }`}
+                            title={
+                              !piConnected 
+                                ? 'Raspberry Pi not connected'
+                                : medications.length === 0
+                                ? 'No medications to dispense'
+                                : !day.timeFrameTimes[timeFrame]
+                                ? 'No time set for this time frame'
+                                : !isDateToday(day.selectedDate)
+                                ? `Date must be today to dispense. Current date: ${day.selectedDate || 'not set'}`
+                                : hasUndispensedEarlierTimeFrames(day, timeFrame, lastServo1Angle)
+                                ? (() => {
+                                    const earlierFrames = []
+                                    const frameOrder: ('morning' | 'afternoon' | 'evening')[] = ['morning', 'afternoon', 'evening']
+                                    const targetIndex = frameOrder.indexOf(timeFrame)
+                                    for (let i = 0; i < targetIndex; i++) {
+                                      const earlierFrame = frameOrder[i]
+                                      const hasMedications = (day.medications[earlierFrame] || []).length > 0
+                                      const hasScheduledTime = day.timeFrameTimes[earlierFrame] !== null && day.timeFrameTimes[earlierFrame] !== ''
+                                      if (hasMedications && hasScheduledTime && !isTimeFrameDispensedByAngle(lastServo1Angle, day.dayOfWeek, earlierFrame)) {
+                                        earlierFrames.push(TIME_FRAMES[earlierFrame].label)
+                                      }
+                                    }
+                                    return `Note: ${earlierFrames.join(' and ')} should be dispensed first`
+                                  })()
+                                : `Dispense all ${medications.length} medication(s) in ${frameInfo.label} bundle`
+                            }
+                          >
+                            {`Dispense (${medications.length})`}
                           </button>
+                          </div>
                           <button
                             onClick={() => handleAddMedication(day.dayOfWeek, timeFrame)}
-                            className="px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition shadow-sm font-medium text-xs sm:text-sm"
+                            className="px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition shadow-sm font-medium text-xs sm:text-sm flex-shrink-0 whitespace-nowrap"
                             title="Add medication"
                           >
                             + Add
@@ -2259,13 +3291,7 @@ export default function Home() {
           <div className="bg-white rounded-xl p-6 sm:p-8 w-full max-w-md shadow-2xl">
             <div className="text-center mb-6">
               <div className="text-5xl mb-4">💊</div>
-              <h3 className="text-xl sm:text-2xl font-bold text-gray-800 mb-2">Dispense Medicine?</h3>
-              <p className="text-gray-700 text-sm sm:text-base">
-                {servo2ConfirmDialog.isAt180 
-                  ? "Servo1 is at 180°. If you confirm, Servo2 will move to 90° and Servo1 will reset to 0°."
-                  : "Would you like to dispense the medicine? The secondary servo will dispense and return to position."
-                }
-              </p>
+              <h3 className="text-xl sm:text-2xl font-bold text-gray-800 mb-6">Dispense Medicine?</h3>
             </div>
             <div className="flex flex-col sm:flex-row gap-3">
               <button

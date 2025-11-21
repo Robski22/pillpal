@@ -111,3 +111,5 @@ scp -o KexAlgorithms=+diffie-hellman-group1-sha1 -o HostKeyAlgorithms=+ssh-dss C
 - **Best method:** Use VS Code Remote SSH to edit directly
 - **Position persistence:** Already implemented in the PCA9685 version!
 
+
+

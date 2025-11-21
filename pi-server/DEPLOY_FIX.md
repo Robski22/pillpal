@@ -158,3 +158,5 @@ tail -f /home/justin/pillpal/server.log
 The fix adds special handling for the 5th rotation to prevent overshoot, ensuring the 6th rotation can reach exactly 180°. Deploy and test! 🎉
 
 
+
+

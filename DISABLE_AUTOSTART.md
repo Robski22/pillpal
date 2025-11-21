@@ -133,3 +133,5 @@ sudo journalctl -u pillpal-server -f
 ```
 
 
+
+

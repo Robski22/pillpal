@@ -1566,10 +1566,13 @@ class LEDController:
     
     LED_GREEN_PIN = 22  # GPIO22 - GREEN LED - ON for positions 0°, 30°, 60°, 90°, 120° (lots of medicine remaining)
     LED_RED_PIN = 27    # GPIO27 - RED LED - ON for positions 150°, 180° (low medicine)
+    MIN_HOLD_TIME = 4.0  # Minimum time (seconds) LED must stay on (3-5 seconds as requested)
     
     def __init__(self, demo_mode=False):
         self.demo_mode = demo_mode
         self.setup_complete = False
+        self._led_turned_on_time = None  # Track when LED was turned on
+        self._current_led_state = None  # Track current LED state ('green', 'red', 'off')
         
         if not demo_mode and GPIO_AVAILABLE:
             self._initialize_leds()
@@ -1600,8 +1603,8 @@ class LEDController:
     def update_leds(self, servo1_angle: float, force_update: bool = False):
         """Update LEDs based on servo1 position
         
-        Green LED (GPIO22): ON for 0°, 30°, 60°, 90°, 120° - STAYS ON as long as angle doesn't change
-        Red LED (GPIO27): ON for 150°, 180° - STAYS ON as long as angle doesn't change
+        Green LED (GPIO22): ON for 0°, 30°, 60°, 90°, 120° - STAYS ON for at least 3-5 seconds
+        Red LED (GPIO27): ON for 150°, 180° - STAYS ON for at least 3-5 seconds
         Only ONE LED should be on at a time - the other is ALWAYS OFF.
         
         Args:
@@ -1623,13 +1626,15 @@ class LEDController:
             return
         
         try:
+            import time
+            current_time = time.time()
+            
             # Round to nearest integer for angle comparison
             angle_int = int(round(servo1_angle))
             
             # Initialize tracking on first call
             if not hasattr(self, '_last_angle'):
                 self._last_angle = None  # Track last angle to detect changes
-                self._last_led_state = None  # Track last LED state ('green', 'red', 'off')
             
             # Determine what the LED state should be for this angle
             desired_state = None
@@ -1640,38 +1645,93 @@ class LEDController:
             else:
                 desired_state = 'off'
             
-            # CRITICAL: Only update GPIO if angle OR state changed (prevents unnecessary writes and blinking)
-            # OR if force_update is True (for startup initialization)
-            # This ensures LEDs stay ON as long as angle doesn't change
-            if not force_update and angle_int == self._last_angle and desired_state == self._last_led_state:
-                # Angle and state haven't changed - LEDs should already be in correct state
-                # Don't write to GPIO, just return (prevents blinking and keeps LEDs ON)
+            # Check if we need to update LEDs
+            needs_update = False
+            
+            # If state changed (green -> red, red -> green, or any -> off), we need to update
+            if desired_state != self._current_led_state:
+                # If current LED has been on for minimum hold time, allow change
+                if self._led_turned_on_time is None:
+                    # No LED was on before, safe to change
+                    needs_update = True
+                else:
+                    time_since_turned_on = current_time - self._led_turned_on_time
+                    if time_since_turned_on >= self.MIN_HOLD_TIME:
+                        # Minimum hold time passed, safe to change
+                        needs_update = True
+                    else:
+                        # Minimum hold time not met yet - keep current LED on
+                        # But if switching between green/red positions, allow immediate switch
+                        if (desired_state == 'green' and self._current_led_state == 'red') or \
+                           (desired_state == 'red' and self._current_led_state == 'green'):
+                            # Switching between green and red - allow immediate switch
+                            needs_update = True
+                        else:
+                            # Don't update yet - minimum hold time not met
+                            return
+            
+            # If angle changed but state is same (e.g., 0° -> 30°, both green), update timestamp but keep LED on
+            elif angle_int != self._last_angle and desired_state == self._current_led_state:
+                # Same LED state, different angle - just update timestamp to extend hold time
+                if self._led_turned_on_time is None:
+                    # LED should be on but timestamp missing - update it
+                    needs_update = True
+                else:
+                    # LED already on, just update last angle (LED stays on)
+                    self._last_angle = angle_int
+                    return
+            
+            # If force_update, always update
+            if force_update:
+                needs_update = True
+            
+            # If no update needed and angle/state haven't changed, return
+            if not needs_update and angle_int == self._last_angle and desired_state == self._current_led_state:
                 return
             
-            # Angle or state changed (or force_update) - update LEDs
-            # Store new state BEFORE updating GPIO
+            # Update LEDs
             self._last_angle = angle_int
-            self._last_led_state = desired_state
             
             # Green LED (GPIO22): ON for 0°, 30°, 60°, 90°, 120°
             if desired_state == 'green':
                 # Turn OFF red first, then turn ON green (ensures only green is on)
                 GPIO.output(self.LED_RED_PIN, GPIO.LOW)      # Red OFF (explicit)
-                GPIO.output(self.LED_GREEN_PIN, GPIO.HIGH)  # Green ON (stays on until angle changes)
-                logger.info(f"💚 GREEN LED (GPIO22) ON, RED LED (GPIO27) OFF - Position: {angle_int}°")
+                GPIO.output(self.LED_GREEN_PIN, GPIO.HIGH)  # Green ON (stays on for at least 3-5 seconds)
+                self._current_led_state = 'green'
+                self._led_turned_on_time = current_time
+                logger.info(f"💚 GREEN LED (GPIO22) ON, RED LED (GPIO27) OFF - Position: {angle_int}° (will stay on for at least {self.MIN_HOLD_TIME}s)")
             
             # Red LED (GPIO27): ON for 150°, 180°
             elif desired_state == 'red':
                 # Turn OFF green first, then turn ON red (ensures only red is on)
                 GPIO.output(self.LED_GREEN_PIN, GPIO.LOW)   # Green OFF (explicit)
-                GPIO.output(self.LED_RED_PIN, GPIO.HIGH)    # Red ON (stays on until angle changes)
-                logger.info(f"❤️ RED LED (GPIO27) ON, GREEN LED (GPIO22) OFF - Position: {angle_int}°")
+                GPIO.output(self.LED_RED_PIN, GPIO.HIGH)    # Red ON (stays on for at least 3-5 seconds)
+                self._current_led_state = 'red'
+                self._led_turned_on_time = current_time
+                logger.info(f"❤️ RED LED (GPIO27) ON, GREEN LED (GPIO22) OFF - Position: {angle_int}° (will stay on for at least {self.MIN_HOLD_TIME}s)")
             
-            # Any other angle: Both OFF
+            # Any other angle: Both OFF (but only if minimum hold time passed)
             else:
-                GPIO.output(self.LED_GREEN_PIN, GPIO.LOW)   # Green OFF
-                GPIO.output(self.LED_RED_PIN, GPIO.LOW)      # Red OFF
-                logger.info(f"⚪ Both LEDs OFF - Position: {angle_int}° (not a standard position)")
+                # Only turn off if minimum hold time has passed
+                if self._led_turned_on_time is None:
+                    # No LED was on, safe to turn off
+                    GPIO.output(self.LED_GREEN_PIN, GPIO.LOW)   # Green OFF
+                    GPIO.output(self.LED_RED_PIN, GPIO.LOW)      # Red OFF
+                    self._current_led_state = 'off'
+                    self._led_turned_on_time = None
+                    logger.info(f"⚪ Both LEDs OFF - Position: {angle_int}° (not a standard position)")
+                else:
+                    time_since_turned_on = current_time - self._led_turned_on_time
+                    if time_since_turned_on >= self.MIN_HOLD_TIME:
+                        # Minimum hold time passed, safe to turn off
+                        GPIO.output(self.LED_GREEN_PIN, GPIO.LOW)   # Green OFF
+                        GPIO.output(self.LED_RED_PIN, GPIO.LOW)      # Red OFF
+                        self._current_led_state = 'off'
+                        self._led_turned_on_time = None
+                        logger.info(f"⚪ Both LEDs OFF - Position: {angle_int}° (not a standard position)")
+                    else:
+                        # Keep current LED on until minimum hold time passes
+                        logger.debug(f"⏳ Keeping LED on (hold time: {time_since_turned_on:.1f}s / {self.MIN_HOLD_TIME}s)")
             
         except Exception as e:
             logger.error(f"❌ Error updating LEDs: {e}")

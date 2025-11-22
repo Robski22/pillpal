@@ -1311,7 +1311,7 @@ export default function Home() {
           // Retry the query after refresh
           const retryResult = await supabase
             .from('day_config')
-            .select('id, user_id, day_of_week, medication_name, is_active, morning_time, afternoon_time, evening_time, created_at, updated_at')
+            .select('id, user_id, day_of_week, medication_name, is_active, morning_time, afternoon_time, evening_time, selected_date, created_at, updated_at')
             .eq('user_id', effectiveUserId)
             .in('day_of_week', [0, 6]) // Database: Sunday (0), Saturday (6)
           

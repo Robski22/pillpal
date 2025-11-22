@@ -380,13 +380,44 @@ export default function Home() {
       const newNoCount = servo2DialogState.noCount + 1
       
       if (newNoCount >= 2) {
-        // Second NO: Wait for next dispense
+        // Second NO: Skip this schedule and find next scheduled time
+        console.log('❌ Second NO - skipping this schedule and finding next scheduled time')
+        
+        // Get current dialog info to mark this schedule as skipped
+        const currentDialog = servo2ConfirmDialog
+        if (currentDialog?.date && currentDialog?.time && currentDialog?.timeFrame) {
+          // Mark this schedule as dispensed (skipped) so it won't show again
+          setDays(prevDays => {
+            return prevDays.map(d => {
+              if (d.selectedDate === currentDialog.date) {
+                // Mark this time frame as dispensed
+                const updatedDispensed = [...(d.dispensedTimeFrames || [])]
+                const skipKey = `${currentDialog.timeFrame}`
+                if (!updatedDispensed.includes(skipKey)) {
+                  updatedDispensed.push(skipKey)
+                }
+                return { ...d, dispensedTimeFrames: updatedDispensed }
+              }
+              return d
+            })
+          })
+          
+          console.log(`⏭️ Marked ${currentDialog.date} ${currentDialog.time} ${currentDialog.timeFrame} as skipped`)
+          showNotification(`Skipped ${currentDialog.timeFrame}. Finding next scheduled time...`, 'info')
+        }
+        
+        // Reset state and find next schedule
         setServo2DialogState({
           lastChoice: 'no',
           noCount: 0, // Reset count
           showAfterNextDispense: true
         })
-        console.log('❌ Second NO - waiting for next dispense before showing dialog again')
+        
+        // Find next scheduled time and continue
+        setTimeout(() => {
+          console.log('🔍 Finding next scheduled time after skip...')
+          // The auto-dispense check will find the next schedule automatically
+        }, 1000)
       } else {
         // First NO: Show again after 1 minute
         setServo2DialogState({
@@ -1653,6 +1684,13 @@ export default function Home() {
         const hasValidTime = scheduledTime !== null && scheduledTime !== '' && scheduledTime.trim() !== ''
         
         if (hasValidTime && hasMedications) {
+          // Skip if this time frame was already dispensed (including skipped schedules)
+          const dispensedFrames = day.dispensedTimeFrames || []
+          if (dispensedFrames.includes(tf)) {
+            console.log(`    ⏭️ Skipping ${tf} - already dispensed or skipped`)
+            continue
+          }
+          
           const timeParts = scheduledTime.split(':')
           if (timeParts.length !== 2) {
             console.log(`    ⚠️ Invalid time format: ${scheduledTime}`)
@@ -2437,7 +2475,7 @@ export default function Home() {
         // Get or create day_config for new medication
         const { data: existingConfig } = await supabase
           .from('day_config')
-          .select('id')
+          .select('id, is_active')
           .eq('user_id', effectiveUserId)
           .eq('day_of_week', dbDayOfWeek) // Use mapped value
           .maybeSingle()
@@ -2446,6 +2484,16 @@ export default function Home() {
 
         if (existingConfig) {
           dayConfigId = existingConfig.id
+          // Ensure is_active is true when adding medication
+          if (!existingConfig.is_active) {
+            const { error: updateError } = await supabase
+              .from('day_config')
+              .update({ is_active: true, updated_at: new Date().toISOString() })
+              .eq('id', dayConfigId)
+            if (updateError) {
+              console.error('Error activating day_config:', updateError)
+            }
+          }
         } else {
           // Create new day_config
           const { data: newConfig, error: insertError } = await supabase
@@ -2494,7 +2542,12 @@ export default function Home() {
           throw medError
         }
 
+        // Small delay to ensure database transaction completes
+        await new Promise(resolve => setTimeout(resolve, 100))
+        
+        // Refresh data to show the new medication
         await fetchDayData()
+        
         setAddingMedication(null)
         setNewMedication({ name: '' })
         showNotification(`${newMedication.name} added to ${dayName} ${TIME_FRAMES[timeFrame as keyof typeof TIME_FRAMES].label}!`, 'success')

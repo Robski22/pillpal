@@ -1035,46 +1035,40 @@ class SMSController:
                 try:
                     # Normalize phone number for SMS (SIMCOM modules need international format)
                     # Remove all spaces, dashes, and other characters
-                    phone = phone.strip().replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+                    phone = phone.strip().replace(" ", "").replace("-", "").replace("(", "").replace(")", "").replace(".", "")
                     
                     # Log original format for debugging
                     original_phone = phone
                     
-                    # Convert to international format (+63XXXXXXXXXX)
-                    # Handle different input formats:
-                    # 1. Already in +63 format: +639123456789 → keep as is
-                    # 2. Starts with 0: 09123456789 → convert to +639123456789
-                    # 3. Starts with 63: 639123456789 → convert to +639123456789
-                    # 4. Just numbers: 9123456789 → convert to +639123456789
+                    # ALWAYS convert to international format (+63XXXXXXXXXX)
+                    # Remove any existing country code or leading characters
+                    phone_clean = phone
                     
-                    if phone.startswith("+63"):
-                        # Already in correct format
-                        pass
-                    elif phone.startswith("63") and len(phone) == 12:
-                        # Starts with 63 but missing +
-                        phone = "+" + phone
-                    elif phone.startswith("0") and len(phone) == 11:
-                        # Philippine format: 09123456789 → +639123456789
-                        phone = "+63" + phone[1:]
-                    elif phone.startswith("0") and len(phone) == 10:
-                        # Philippine format without leading 0: 9123456789 → +639123456789
-                        phone = "+63" + phone
-                    elif len(phone) == 10 and phone.isdigit():
-                        # Just 10 digits: 9123456789 → +639123456789
-                        phone = "+63" + phone
-                    elif len(phone) == 11 and phone.isdigit():
-                        # 11 digits starting with 0: 09123456789 → +639123456789
-                        if phone.startswith("0"):
-                            phone = "+63" + phone[1:]
-                        else:
-                            phone = "+63" + phone
-                    else:
-                        # Unknown format, try to fix
-                        if not phone.startswith("+"):
-                            if phone.startswith("0"):
-                                phone = "+63" + phone[1:]
-                            else:
-                                phone = "+63" + phone
+                    # Remove + if present
+                    if phone_clean.startswith("+"):
+                        phone_clean = phone_clean[1:]
+                    
+                    # Remove country code 63 if present
+                    if phone_clean.startswith("63"):
+                        phone_clean = phone_clean[2:]
+                    
+                    # Remove leading 0 if present (Philippine format)
+                    if phone_clean.startswith("0"):
+                        phone_clean = phone_clean[1:]
+                    
+                    # Now we should have just the 10-digit number
+                    # Validate it's 10 digits
+                    if not phone_clean.isdigit() or len(phone_clean) != 10:
+                        logger.error(f"❌ Invalid phone number format: {original_phone} (cleaned: {phone_clean})")
+                        continue
+                    
+                    # Convert to +63 format
+                    phone = "+63" + phone_clean
+                    
+                    # Verify final format
+                    if not phone.startswith("+63") or len(phone) != 13:
+                        logger.error(f"❌ Phone number conversion failed: {original_phone} → {phone}")
+                        continue
                     
                     logger.info(f"📤 Sending SMS to {phone} (original: {original_phone})...")
                     
@@ -1695,7 +1689,7 @@ if GPIO_AVAILABLE:
 
 # Global controllers (initialized once, not reset on connection)
 servo_controller = ServoController(demo_mode=False)  # Set to True for testing
-sms_controller = SMSController(demo_mode=False, serial_port='/dev/ttyUSB0', baudrate=9600)  # Set demo_mode=True for testing without SIMCOM
+sms_controller = SMSController(demo_mode=False, serial_port='/dev/ttyS0', baudrate=115200)  # Set demo_mode=True for testing without SIMCOM
 lcd_controller = LCDController(demo_mode=False)  # LCD display controller
 led_controller = LEDController(demo_mode=False)  # LED level indicators
 buzzer_controller = BuzzerController(demo_mode=False)  # Buzzer for dispense notifications

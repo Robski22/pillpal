@@ -2054,6 +2054,33 @@ export default function Home() {
               .single()
 
             if (profileData?.phone_number) {
+              // Convert phone number to +63 format
+              let phoneNumber = profileData.phone_number.trim().replace(/\s+/g, '').replace(/-/g, '').replace(/\(/g, '').replace(/\)/g, '').replace(/\./g, '')
+              
+              // Remove + if present
+              if (phoneNumber.startsWith('+')) {
+                phoneNumber = phoneNumber.substring(1)
+              }
+              
+              // Remove country code 63 if present
+              if (phoneNumber.startsWith('63')) {
+                phoneNumber = phoneNumber.substring(2)
+              }
+              
+              // Remove leading 0 if present (Philippine format)
+              if (phoneNumber.startsWith('0')) {
+                phoneNumber = phoneNumber.substring(1)
+              }
+              
+              // Convert to +63 format (should be 10 digits now)
+              if (phoneNumber.length === 10 && /^\d+$/.test(phoneNumber)) {
+                phoneNumber = '+63' + phoneNumber
+              } else {
+                // If format is wrong, try to use as-is (server will handle conversion)
+                console.warn(`⚠️ Phone number format may be incorrect: ${profileData.phone_number}`)
+                phoneNumber = profileData.phone_number
+              }
+              
               // Format message: "The [medicines] for [timeframe] is/are ready to dispense"
               const medicationCount = frameMedications.length
               const medicationList = medicationNames
@@ -2063,8 +2090,8 @@ export default function Home() {
               const smsMessage = `The ${medicationList} for ${timeframeLabel} ${isAre} ready to dispense.`
               
               // Send SMS via Pi WebSocket (SIMCOM module)
-              console.log(`📱 Attempting to send SMS to ${profileData.phone_number}: "${smsMessage}"`)
-              const smsResult = await sendSmsViaPi([profileData.phone_number], smsMessage)
+              console.log(`📱 Attempting to send SMS to ${phoneNumber} (original: ${profileData.phone_number}): "${smsMessage}"`)
+              const smsResult = await sendSmsViaPi([phoneNumber], smsMessage)
               console.log('📱 SMS result:', smsResult)
               
               if (smsResult?.success || smsResult?.status === 'queued') {
@@ -2182,12 +2209,41 @@ export default function Home() {
             .eq('id', effectiveUserIdForSMS)
             .single()
 
+          // Helper function to convert phone number to +63 format
+          const convertToPlus63 = (phone: string): string => {
+            let phoneNum = phone.trim().replace(/\s+/g, '').replace(/-/g, '').replace(/\(/g, '').replace(/\)/g, '').replace(/\./g, '')
+            
+            // Remove + if present
+            if (phoneNum.startsWith('+')) {
+              phoneNum = phoneNum.substring(1)
+            }
+            
+            // Remove country code 63 if present
+            if (phoneNum.startsWith('63')) {
+              phoneNum = phoneNum.substring(2)
+            }
+            
+            // Remove leading 0 if present (Philippine format)
+            if (phoneNum.startsWith('0')) {
+              phoneNum = phoneNum.substring(1)
+            }
+            
+            // Convert to +63 format (should be 10 digits now)
+            if (phoneNum.length === 10 && /^\d+$/.test(phoneNum)) {
+              return '+63' + phoneNum
+            } else {
+              // If format is wrong, try to use as-is (server will handle conversion)
+              console.warn(`⚠️ Phone number format may be incorrect: ${phone}`)
+              return phone
+            }
+          }
+          
           // Collect all phone numbers to send SMS to
           const phoneNumbers: string[] = []
           
           // Add main phone number
           if (profileData?.phone_number) {
-            phoneNumbers.push(profileData.phone_number)
+            phoneNumbers.push(convertToPlus63(profileData.phone_number))
           }
           
           // Extract phone number from emergency contact (format: "Name 09171234567" or just "09171234567")
@@ -2197,19 +2253,16 @@ export default function Home() {
             const phoneMatch = emergencyContact.match(/(\+?63|0)?9\d{9}/)
             if (phoneMatch) {
               let emergencyPhone = phoneMatch[0]
-              // Normalize format (ensure starts with 0 or +63)
-              if (!emergencyPhone.startsWith('0') && !emergencyPhone.startsWith('+63')) {
-                emergencyPhone = '0' + emergencyPhone
-              }
-              phoneNumbers.push(emergencyPhone)
+              phoneNumbers.push(convertToPlus63(emergencyPhone))
             }
           }
-
+          
           if (phoneNumbers.length > 0) {
                         const smsMessage = `${medicationNames}`
             
             // Send SMS via Pi WebSocket (SIMCOM module) to all recipients
             console.log(`📱 Attempting to send SMS to ${phoneNumbers.length} recipient(s): "${smsMessage}"`)
+            console.log(`📱 Phone numbers: ${phoneNumbers.join(', ')}`)
             const smsResult = await sendSmsViaPi(phoneNumbers, smsMessage)
             console.log('📱 SMS result:', smsResult)
             

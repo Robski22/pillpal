@@ -346,7 +346,9 @@ export default function Home() {
       },
       onCancel: () => {
         console.log('❌ User clicked NO')
-        handleServo2DialogChoice('no')
+        // Store dialog info before closing (needed for retry logic)
+        const currentDialog = servo2ConfirmDialog
+        handleServo2DialogChoice('no', currentDialog)
         setServo2ConfirmDialog(null)
         if (isAt180) {
           showNotification('Cancelled. Servo1 will stay at 180° and Servo2 will not move.', 'info')
@@ -358,8 +360,8 @@ export default function Home() {
   }
 
   // Helper function to handle servo2 dialog user choice
-  const handleServo2DialogChoice = (choice: 'yes' | 'no') => {
-    console.log(`✅ User chose: ${choice}`)
+  const handleServo2DialogChoice = (choice: 'yes' | 'no', dialogInfo?: { date?: string; time?: string; timeFrame?: string; isAt180?: boolean; onConfirm: () => void; onCancel: () => void } | null) => {
+    console.log(`✅ User chose: ${choice}, noCount: ${servo2DialogState.noCount}`)
     
     // Clear any existing NO timeout
     if (servo2NoTimeoutRef.current) {
@@ -378,22 +380,23 @@ export default function Home() {
     } else {
       // NO: Check if this is the second NO
       const newNoCount = servo2DialogState.noCount + 1
+      console.log(`❌ NO count: ${newNoCount} (was ${servo2DialogState.noCount})`)
       
       if (newNoCount >= 2) {
         // Second NO: Skip this schedule and find next scheduled time
         console.log('❌ Second NO - skipping this schedule and finding next scheduled time')
         
-        // Get current dialog info to mark this schedule as skipped
-        const currentDialog = servo2ConfirmDialog
-        if (currentDialog?.date && currentDialog?.time && currentDialog?.timeFrame) {
+        // Use dialog info passed as parameter (captured before dialog was closed)
+        const currentDialog = dialogInfo || servo2ConfirmDialog
+        if (currentDialog?.date && currentDialog?.timeFrame) {
           // Mark this schedule as dispensed (skipped) so it won't show again
           setDays(prevDays => {
             return prevDays.map(d => {
               if (d.selectedDate === currentDialog.date) {
                 // Mark this time frame as dispensed
                 const updatedDispensed = [...(d.dispensedTimeFrames || [])]
-                const skipKey = `${currentDialog.timeFrame}`
-                if (!updatedDispensed.includes(skipKey)) {
+                const skipKey = currentDialog.timeFrame
+                if (skipKey && !updatedDispensed.includes(skipKey)) {
                   updatedDispensed.push(skipKey)
                 }
                 return { ...d, dispensedTimeFrames: updatedDispensed }
@@ -425,17 +428,30 @@ export default function Home() {
           noCount: newNoCount,
           showAfterNextDispense: false
         })
-        console.log('❌ First NO - showing dialog again after 1 minute')
+        console.log(`❌ First NO (count: ${newNoCount}) - showing dialog again after 1 minute`)
         
-        // Store current dialog config for reopening
-        const currentDialog = servo2ConfirmDialog
+        // Use dialog info passed as parameter (captured before dialog was closed)
+        const currentDialog = dialogInfo || servo2ConfirmDialog
+        
+        if (!currentDialog) {
+          console.error('❌ No dialog info available for retry')
+          return
+        }
         
         // Set timeout to show dialog again after 1 minute
         servo2NoTimeoutRef.current = setTimeout(() => {
           console.log('⏱️ 1 minute passed - showing dialog again')
-          // Recreate the dialog with same config
+          // Recreate the dialog with same config (but need to recreate the functions)
           if (currentDialog) {
-            setServo2ConfirmDialog(currentDialog)
+            const retryDialogConfig = createServo2DialogConfig(
+              currentDialog.isAt180 || false,
+              () => {}, // onServo2Complete
+              currentDialog.date,
+              currentDialog.time,
+              currentDialog.timeFrame
+            )
+            setServo2ConfirmDialog(retryDialogConfig)
+            console.log('✅ Dialog reopened after 1 minute')
           }
           servo2NoTimeoutRef.current = null
         }, 60 * 1000) // 1 minute

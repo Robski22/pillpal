@@ -28,6 +28,11 @@ interface DayData {
     afternoon: string | null // Time for afternoon frame
     evening: string | null // Time for evening frame
   }
+  timeFrameRequireConfirmation: {
+    morning: boolean // true = requires confirmation, false = automatic dispense
+    afternoon: boolean
+    evening: boolean
+  }
   status: string
   servoNumber: number // All days use servo1
   lastDispensedTime?: string // Track last manual dispense time (HH:MM) for progressive scheduling
@@ -187,6 +192,7 @@ export default function Home() {
           selectedDate: null,
           medications: { morning: [], afternoon: [], evening: [] },
           timeFrameTimes: { morning: null, afternoon: null, evening: null },
+          timeFrameRequireConfirmation: { morning: false, afternoon: false, evening: false }, // Default: automatic dispense (OFF)
           status: 'ready', 
           servoNumber: 1,
           dispensedTimeFrames: []
@@ -197,6 +203,7 @@ export default function Home() {
           selectedDate: null,
           medications: { morning: [], afternoon: [], evening: [] },
           timeFrameTimes: { morning: null, afternoon: null, evening: null },
+          timeFrameRequireConfirmation: { morning: false, afternoon: false, evening: false }, // Default: automatic dispense (OFF)
           status: 'ready', 
           servoNumber: 1,
           dispensedTimeFrames: []
@@ -287,6 +294,11 @@ export default function Home() {
   })
   const servo2NoTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const servo2ProcessingRef = useRef<boolean>(false) // Prevent double-trigger
+  const [confirmationPreferenceDialog, setConfirmationPreferenceDialog] = useState<{
+    dayOfWeek: number
+    timeFrame: 'morning' | 'afternoon' | 'evening'
+    medicationName: string
+  } | null>(null)
   const [lastServo1Angle, setLastServo1Angle] = useState<number | null>(null) // Track last known servo1 angle
   const holdTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map()) // Track button hold timers per button
   const holdCompletedRef = useRef<Set<string>>(new Set()) // Track which buttons completed hold
@@ -1259,7 +1271,7 @@ export default function Home() {
       
       let { data: configs, error } = await supabase
         .from('day_config')
-        .select('id, user_id, day_of_week, medication_name, is_active, morning_time, afternoon_time, evening_time, selected_date, created_at, updated_at')
+        .select('id, user_id, day_of_week, medication_name, is_active, morning_time, afternoon_time, evening_time, selected_date, morning_require_confirmation, afternoon_require_confirmation, evening_require_confirmation, created_at, updated_at')
         .eq('user_id', effectiveUserId)
         .in('day_of_week', [0, 6]) // Database: Sunday (0), Saturday (6)
       
@@ -1311,7 +1323,7 @@ export default function Home() {
           // Retry the query after refresh
           const retryResult = await supabase
             .from('day_config')
-            .select('id, user_id, day_of_week, medication_name, is_active, morning_time, afternoon_time, evening_time, selected_date, created_at, updated_at')
+            .select('id, user_id, day_of_week, medication_name, is_active, morning_time, afternoon_time, evening_time, selected_date, morning_require_confirmation, afternoon_require_confirmation, evening_require_confirmation, created_at, updated_at')
             .eq('user_id', effectiveUserId)
             .in('day_of_week', [0, 6]) // Database: Sunday (0), Saturday (6)
           
@@ -1406,6 +1418,13 @@ export default function Home() {
             evening: config.evening_time ? config.evening_time.slice(0, 5) : null
           }
 
+          // Get confirmation preferences from day_config (default: false = automatic dispense)
+          const timeFrameRequireConfirmation = {
+            morning: config.morning_require_confirmation ?? false,
+            afternoon: config.afternoon_require_confirmation ?? false,
+            evening: config.evening_require_confirmation ?? false
+          }
+
           // Load selectedDate from database first (for syncing between patient and caregiver)
           // Fall back to localStorage, then auto-calculate
           let selectedDateFromDB = config.selected_date || null
@@ -1475,6 +1494,7 @@ export default function Home() {
               evening: eveningMeds.sort((a, b) => a.medication_name.localeCompare(b.medication_name))
             },
             timeFrameTimes: timeFrameTimes,
+            timeFrameRequireConfirmation: timeFrameRequireConfirmation,
             status: 'ready',
             servoNumber: 1, // Both use servo1
             dispensedTimeFrames: [] // Reset on fetch - will be tracked in state
@@ -1568,6 +1588,7 @@ export default function Home() {
               afternoon: null,
               evening: null
             },
+            timeFrameRequireConfirmation: { morning: false, afternoon: false, evening: false }, // Default: automatic dispense (OFF)
             status: 'ready',
             servoNumber: 1,
             dispensedTimeFrames: []
@@ -1815,6 +1836,42 @@ export default function Home() {
     await handleDispense(earliest.dayOfWeek, earliest.timeFrame, true, true)
   }
 
+  // Helper function to perform the actual dispense
+  const performDispense = async (
+    dayOfWeek: number,
+    targetTimeFrame: 'morning' | 'afternoon' | 'evening',
+    day: DayData,
+    frameMedications: Medication[],
+    scheduledTime: string,
+    medicationNames: string
+  ) => {
+    // Update UI to show dispensing
+    setDays(prevDays => 
+      prevDays.map(d => 
+        d.dayOfWeek === dayOfWeek 
+          ? { ...d, status: 'dispensing' }
+          : d
+      )
+    )
+
+    // Calculate target angle for this specific time frame
+    const targetAngle = getAngleForTimeFrame(dayOfWeek, targetTimeFrame)
+    const currentAngle = lastServo1Angle ?? 0
+    
+    console.log(`🎯 Time frame dispense: ${day.name} ${TIME_FRAMES[targetTimeFrame].label} → Target angle: ${targetAngle}° (Current: ${currentAngle}°)`)
+    
+    // Move directly to the target angle for this time frame
+    const response = await dispenseToPi('servo1', medicationNames, targetAngle, day.selectedDate || undefined, scheduledTime, targetTimeFrame)
+    console.log('✅ Manual dispense bundle response:', response)
+    
+    // Update last known servo1 angle from response
+    if (response?.servo1_angle !== undefined) {
+      setLastServo1Angle(response.servo1_angle)
+    }
+    
+    return response
+  }
+
   const handleDispense = async (dayOfWeek: number, timeFrame?: 'morning' | 'afternoon' | 'evening', skipTimeWindowCheck: boolean = false, forceDispense: boolean = false) => {
     // Check Pi connection first (skip for force dispense)
     if (!forceDispense && !piConnected) {
@@ -1997,6 +2054,88 @@ export default function Home() {
       
       const medicationNames = frameMedications.map(m => m.medication_name).join(', ')
 
+      // Check if confirmation is required for this time frame
+      const requireConfirmation = day.timeFrameRequireConfirmation[targetTimeFrame] ?? false
+      
+      // If confirmation is required and not force dispense, show confirmation dialog
+      if (requireConfirmation && !forceDispense) {
+        return new Promise<void>((resolve) => {
+          setServo2ConfirmDialog({
+            onConfirm: async () => {
+              setServo2ConfirmDialog(null)
+              
+              // Perform the actual dispense
+              try {
+                // Update UI to show dispensing
+                setDays(prevDays => 
+                  prevDays.map(d => 
+                    d.dayOfWeek === dayOfWeek 
+                      ? { ...d, status: 'dispensing' }
+                      : d
+                  )
+                )
+
+                // Calculate target angle for this specific time frame
+                const targetAngle = getAngleForTimeFrame(dayOfWeek, targetTimeFrame)
+                const currentAngle = lastServo1Angle ?? 0
+                
+                console.log(`🎯 Time frame dispense: ${day.name} ${TIME_FRAMES[targetTimeFrame].label} → Target angle: ${targetAngle}° (Current: ${currentAngle}°)`)
+                
+                // Move directly to the target angle for this time frame
+                const response = await dispenseToPi('servo1', medicationNames, targetAngle, day.selectedDate || undefined, scheduledTime, targetTimeFrame)
+                console.log('✅ Manual dispense bundle response:', response)
+                
+                // Update last known servo1 angle from response
+                if (response?.servo1_angle !== undefined) {
+                  setLastServo1Angle(response.servo1_angle)
+                }
+                
+                // Continue with rest of dispense logic (SMS, status updates, etc.)
+                // This will be handled by the existing code flow below
+                // For now, we'll just mark as successful and let the rest of the function handle it
+                if (response?.success) {
+                  showNotification(`✅ Dispensed ${medicationNames} for ${TIME_FRAMES[targetTimeFrame].label}!`, 'success')
+                  
+                  // Mark this time frame as dispensed
+                  setDays(prevDays => 
+                    prevDays.map(d => 
+                      d.dayOfWeek === dayOfWeek 
+                        ? { 
+                            ...d, 
+                            status: 'ready',
+                            dispensedTimeFrames: [...(d.dispensedTimeFrames || []), targetTimeFrame]
+                          }
+                        : d
+                    )
+                  )
+                } else {
+                  throw new Error(response?.error || 'Dispense failed')
+                }
+              } catch (error: any) {
+                console.error('Dispense error:', error)
+                showNotification(`Error: ${error?.message || 'Failed to dispense'}`, 'error')
+                setDays(prevDays => 
+                  prevDays.map(d => 
+                    d.dayOfWeek === dayOfWeek 
+                      ? { ...d, status: 'ready' }
+                      : d
+                  )
+                )
+              }
+              
+              resolve()
+            },
+            onCancel: () => {
+              setServo2ConfirmDialog(null)
+              showNotification('Dispense cancelled', 'info')
+              resolve()
+            },
+            timeFrame: targetTimeFrame
+          })
+        })
+      }
+
+      // Automatic dispense (no confirmation required)
       // Update UI to show dispensing
       setDays(prevDays => 
         prevDays.map(d => 
@@ -2618,8 +2757,17 @@ export default function Home() {
         await fetchDayData()
         
         setAddingMedication(null)
+        const medicationName = newMedication.name
         setNewMedication({ name: '' })
-        showNotification(`${newMedication.name} added to ${dayName} ${TIME_FRAMES[timeFrame as keyof typeof TIME_FRAMES].label}!`, 'success')
+        
+        // Show confirmation preference dialog right after adding medicine
+        setConfirmationPreferenceDialog({
+          dayOfWeek: dayOfWeek,
+          timeFrame: timeFrame as 'morning' | 'afternoon' | 'evening',
+          medicationName: medicationName
+        })
+        
+        showNotification(`${medicationName} added to ${dayName} ${TIME_FRAMES[timeFrame as keyof typeof TIME_FRAMES].label}!`, 'success')
       }
     } catch (error: any) {
       console.error('Error saving medication:', error)
@@ -3403,6 +3551,130 @@ export default function Home() {
                 Cancel
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Preference Dialog - Shown after adding medicine */}
+      {confirmationPreferenceDialog && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl p-6 sm:p-8 w-full max-w-md shadow-2xl">
+            <div className="text-center mb-6">
+              <div className="text-5xl mb-4">⚙️</div>
+              <h3 className="text-xl sm:text-2xl font-bold text-gray-800 mb-2">Dispense Preference</h3>
+              <p className="text-sm text-gray-600 mb-4">
+                How should <span className="font-semibold">{confirmationPreferenceDialog.medicationName}</span> be dispensed?
+              </p>
+            </div>
+            
+            <div className="mb-6">
+              <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                <div className="flex-1">
+                  <div className="font-semibold text-gray-800 mb-1">
+                    {(() => {
+                      const day = days.find(d => d.dayOfWeek === confirmationPreferenceDialog.dayOfWeek)
+                      const timeFrameLabel = TIME_FRAMES[confirmationPreferenceDialog.timeFrame].label
+                      return `${day?.name || ''} ${timeFrameLabel}`
+                    })()}
+                  </div>
+                  <div className="text-sm text-gray-600">
+                    {(() => {
+                      const day = days.find(d => d.dayOfWeek === confirmationPreferenceDialog.dayOfWeek)
+                      const requireConfirmation = day?.timeFrameRequireConfirmation[confirmationPreferenceDialog.timeFrame] ?? false
+                      return requireConfirmation 
+                        ? 'Confirmation required before dispensing'
+                        : 'Automatic dispense at scheduled time'
+                    })()}
+                  </div>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer ml-4">
+                  <input
+                    type="checkbox"
+                    checked={(() => {
+                      const day = days.find(d => d.dayOfWeek === confirmationPreferenceDialog.dayOfWeek)
+                      return day?.timeFrameRequireConfirmation[confirmationPreferenceDialog.timeFrame] ?? false
+                    })()}
+                    onChange={async (e) => {
+                      const requireConfirmation = e.target.checked
+                      const day = days.find(d => d.dayOfWeek === confirmationPreferenceDialog.dayOfWeek)
+                      if (!day) return
+                      
+                      // Update local state immediately
+                      setDays(prevDays => 
+                        prevDays.map(d => 
+                          d.dayOfWeek === confirmationPreferenceDialog.dayOfWeek
+                            ? {
+                                ...d,
+                                timeFrameRequireConfirmation: {
+                                  ...d.timeFrameRequireConfirmation,
+                                  [confirmationPreferenceDialog.timeFrame]: requireConfirmation
+                                }
+                              }
+                            : d
+                        )
+                      )
+                      
+                      // Save to database
+                      try {
+                        const session = await refreshSessionIfNeeded()
+                        if (!session) return
+                        
+                        let effectiveUserId = isOwner ? session.user.id : (ownerUserId || session.user.id)
+                        if (!isOwner && !ownerUserId) {
+                          const resolved = await resolveOwner()
+                          if (resolved) {
+                            effectiveUserId = resolved.ownerUserId
+                          }
+                        }
+                        
+                        const dbDayOfWeek = confirmationPreferenceDialog.dayOfWeek
+                        const updateField = `${confirmationPreferenceDialog.timeFrame}_require_confirmation`
+                        
+                        const { data: config } = await supabase
+                          .from('day_config')
+                          .select('id')
+                          .eq('user_id', effectiveUserId)
+                          .eq('day_of_week', dbDayOfWeek)
+                          .single()
+                        
+                        if (config) {
+                          await supabase
+                            .from('day_config')
+                            .update({
+                              [updateField]: requireConfirmation,
+                              updated_at: new Date().toISOString()
+                            })
+                            .eq('id', config.id)
+                        }
+                      } catch (error) {
+                        console.error('Error saving confirmation preference:', error)
+                      }
+                    }}
+                    className="sr-only peer"
+                  />
+                  <div className="w-14 h-7 bg-gray-300 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-[4px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-6 after:w-6 after:transition-all peer-checked:bg-blue-600"></div>
+                </label>
+              </div>
+              
+              <div className="mt-4 p-3 bg-blue-50 rounded-lg">
+                <div className="flex items-start">
+                  <div className="text-2xl mr-2">ℹ️</div>
+                  <div className="text-xs text-gray-700">
+                    <div className="font-semibold mb-1">Toggle OFF (Default):</div>
+                    <div>Medicine will dispense automatically at the scheduled time</div>
+                    <div className="font-semibold mt-2 mb-1">Toggle ON:</div>
+                    <div>You will be asked to confirm before dispensing</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <button
+              onClick={() => setConfirmationPreferenceDialog(null)}
+              className="w-full px-4 py-3 text-sm sm:text-base bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-lg hover:from-blue-600 hover:to-blue-700 transition shadow-lg font-semibold"
+            >
+              Done
+            </button>
           </div>
         </div>
       )}

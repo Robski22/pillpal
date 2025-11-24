@@ -3,22 +3,49 @@
 let ws: WebSocket | null = null
 let connected = false
 let reconnectAttempts = 0
-const MAX_RECONNECT_ATTEMPTS = 5
+const MAX_RECONNECT_ATTEMPTS = Infinity // Keep trying to reconnect forever
 let buttonPressCallback: ((pressed: boolean) => void) | null = null
+let connectionStatusCallback: ((connected: boolean) => void) | null = null
 let messageHandlers: Map<string, (response: any) => void> = new Map()
 let keepAliveInterval: NodeJS.Timeout | null = null
-const KEEPALIVE_INTERVAL = 30000 // Send ping every 30 seconds to keep connection alive
+const KEEPALIVE_INTERVAL = 10000 // Send ping every 10 seconds to keep connection alive (very frequent to prevent 1-minute timeout)
+let connectionCheckInterval: NodeJS.Timeout | null = null
+const CONNECTION_CHECK_INTERVAL = 5000 // Check connection every 5 seconds (very frequent to catch disconnections quickly)
+let urlRefreshInterval: NodeJS.Timeout | null = null
+const URL_REFRESH_INTERVAL = 60000 // Check for URL changes every 60 seconds
+let currentUrl: string | null = null
 
 // Fetch WebSocket URL from API at runtime (not build-time!)
 async function getWebSocketUrl(): Promise<string> {
   try {
     const response = await fetch('/api/pi-url')
     const data = await response.json()
-    console.log('✔ Using WebSocket URL:', data.url)
-    return data.url || process.env.NEXT_PUBLIC_PI_WEBSOCKET_URL || 'ws://192.168.1.45:8765'
+    const url = data.url || process.env.NEXT_PUBLIC_PI_WEBSOCKET_URL || 'ws://192.168.1.45:8765'
+    console.log('✔ Using WebSocket URL:', url)
+    return url
   } catch (error) {
     console.error('Error fetching WebSocket URL:', error)
     return process.env.NEXT_PUBLIC_PI_WEBSOCKET_URL || 'ws://192.168.1.45:8765'
+  }
+}
+
+// Check if URL has changed and reconnect if needed
+async function checkUrlAndReconnectIfNeeded() {
+  try {
+    const newUrl = await getWebSocketUrl()
+    if (currentUrl && newUrl !== currentUrl && ws && ws.readyState === WebSocket.OPEN) {
+      console.log('🔄 Tunnel URL changed! Reconnecting with new URL...')
+      console.log('   Old URL:', currentUrl)
+      console.log('   New URL:', newUrl)
+      // Close current connection and reconnect with new URL
+      if (ws) {
+        ws.close()
+      }
+      // Reconnection will happen automatically via onclose handler
+    }
+    currentUrl = newUrl
+  } catch (error) {
+    console.error('Error checking URL:', error)
   }
 }
 
@@ -32,6 +59,7 @@ export async function connectToPi(): Promise<void> {
 
     // Fetch URL at runtime (not build-time!)
     const PI_URL = await getWebSocketUrl()
+    currentUrl = PI_URL
     console.log('🔧 Using WebSocket URL:', PI_URL)
     console.log('🔌 Connecting to Pi at:', PI_URL)
 
@@ -42,6 +70,11 @@ export async function connectToPi(): Promise<void> {
       console.log(' Connected to Pi!')
       connected = true
       reconnectAttempts = 0 // Reset on successful connection
+      
+      // Notify connection status change
+      if (connectionStatusCallback) {
+        connectionStatusCallback(true)
+      }
       
       // Start keepalive ping to prevent connection timeout
       if (keepAliveInterval) {
@@ -55,6 +88,10 @@ export async function connectToPi(): Promise<void> {
             console.log('💓 Keepalive ping sent')
           } catch (error) {
             console.error('Error sending keepalive ping:', error)
+            // If ping fails, connection might be dead - trigger reconnect
+            if (ws) {
+              ws.close()
+            }
           }
         } else {
           // Connection is closed, clear interval
@@ -64,6 +101,30 @@ export async function connectToPi(): Promise<void> {
           }
         }
       }, KEEPALIVE_INTERVAL)
+      
+      // Start connection health check
+      if (connectionCheckInterval) {
+        clearInterval(connectionCheckInterval)
+      }
+      connectionCheckInterval = setInterval(() => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          console.log('⚠️ Connection health check failed - reconnecting...')
+          if (ws) {
+            ws.close()
+          } else {
+            // No connection exists, try to connect
+            connectToPi().catch(err => console.error('Health check reconnect failed:', err))
+          }
+        }
+      }, CONNECTION_CHECK_INTERVAL)
+      
+      // Start URL refresh check to detect tunnel URL changes
+      if (urlRefreshInterval) {
+        clearInterval(urlRefreshInterval)
+      }
+      urlRefreshInterval = setInterval(() => {
+        checkUrlAndReconnectIfNeeded().catch(err => console.error('URL check failed:', err))
+      }, URL_REFRESH_INTERVAL)
       
       resolve()
     }
@@ -76,27 +137,42 @@ export async function connectToPi(): Promise<void> {
       console.log(' Disconnected', event.code, event.reason)
       connected = false
       
+      // Notify connection status change
+      if (connectionStatusCallback) {
+        connectionStatusCallback(false)
+      }
+      
       // Clear keepalive interval
       if (keepAliveInterval) {
         clearInterval(keepAliveInterval)
         keepAliveInterval = null
       }
       
-      // Auto-reconnect with fresh URL from API
-      if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-        reconnectAttempts++
-        console.log(` Reconnecting... (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`)
-        // Fetch fresh URL on reconnect to handle tunnel URL changes
-        setTimeout(async () => {
-          try {
-            await connectToPi()
-          } catch (error) {
-            console.error('Reconnection failed:', error)
-          }
-        }, 3000)
-      } else {
-        console.error(' Max reconnection attempts reached. Please refresh the page or check the tunnel URL.')
+      // Clear connection check interval
+      if (connectionCheckInterval) {
+        clearInterval(connectionCheckInterval)
+        connectionCheckInterval = null
       }
+      
+      // Clear URL refresh interval
+      if (urlRefreshInterval) {
+        clearInterval(urlRefreshInterval)
+        urlRefreshInterval = null
+      }
+      
+      // Auto-reconnect with fresh URL from API (infinite retries)
+      reconnectAttempts++
+      const delay = Math.min(3000 + (reconnectAttempts * 1000), 30000) // Exponential backoff, max 30 seconds
+      console.log(` Reconnecting... (attempt ${reconnectAttempts}, delay: ${delay}ms)`)
+      // Fetch fresh URL on reconnect to handle tunnel URL changes
+      setTimeout(async () => {
+        try {
+          await connectToPi()
+        } catch (error) {
+          console.error('Reconnection failed:', error)
+          // Will retry again on next onclose event
+        }
+      }, delay)
     }
 
     // Set up persistent message handler
@@ -188,11 +264,27 @@ export function disconnectFromPi() {
     keepAliveInterval = null
   }
   
+  // Clear connection check interval
+  if (connectionCheckInterval) {
+    clearInterval(connectionCheckInterval)
+    connectionCheckInterval = null
+  }
+  
+  // Clear URL refresh interval
+  if (urlRefreshInterval) {
+    clearInterval(urlRefreshInterval)
+    urlRefreshInterval = null
+  }
+  
   if (ws) {
     ws.close()
     ws = null
     connected = false
   }
+  
+  // Reset reconnect attempts when manually disconnecting
+  reconnectAttempts = 0
+  currentUrl = null
 }
 
 export function isConnectedToPi(): boolean {
@@ -362,6 +454,14 @@ export function confirmServo2Dispense(date?: string, time?: string, timeFrame?: 
 
 export function setButtonPressCallback(callback: ((pressed: boolean) => void) | null) {
   buttonPressCallback = callback
+}
+
+export function setConnectionStatusCallback(callback: ((connected: boolean) => void) | null) {
+  connectionStatusCallback = callback
+  // Immediately notify current status
+  if (callback) {
+    callback(connected && ws?.readyState === WebSocket.OPEN)
+  }
 }
 
 export function updateLCDSchedules(schedules: Array<{time: string, medication?: string, time_frame?: string, date?: string}>): Promise<any> {

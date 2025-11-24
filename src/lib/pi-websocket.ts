@@ -18,13 +18,26 @@ let currentUrl: string | null = null
 // Fetch WebSocket URL from API at runtime (not build-time!)
 async function getWebSocketUrl(): Promise<string> {
   try {
-    const response = await fetch('/api/pi-url')
+    // Add cache-busting to ensure we get the latest URL
+    const response = await fetch('/api/pi-url?' + new Date().getTime(), {
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache'
+      }
+    })
     const data = await response.json()
     const url = data.url || process.env.NEXT_PUBLIC_PI_WEBSOCKET_URL || 'ws://192.168.1.45:8765'
+    
+    // Validate URL format
+    if (!url || url === 'ws://192.168.1.45:8765') {
+      console.warn('⚠️ No valid URL from API, using fallback')
+    }
+    
     console.log('✔ Using WebSocket URL:', url)
     return url
   } catch (error) {
-    console.error('Error fetching WebSocket URL:', error)
+    console.error('❌ Error fetching WebSocket URL:', error)
     return process.env.NEXT_PUBLIC_PI_WEBSOCKET_URL || 'ws://192.168.1.45:8765'
   }
 }

@@ -4,7 +4,7 @@ import { useAuth } from '../src/contexts/AuthContext'
 import { useRouter } from 'next/navigation'
 import { useEffect, useState, useRef } from 'react'
 import { supabase } from '../src/lib/supabase'
-import { connectToPi, disconnectFromPi, isConnectedToPi, dispenseToPi, sendSmsViaPi, confirmServo2Dispense, setButtonPressCallback, updateLCDSchedules } from '../src/lib/pi-websocket'
+import { connectToPi, disconnectFromPi, isConnectedToPi, dispenseToPi, sendSmsViaPi, confirmServo2Dispense, setButtonPressCallback, setConnectionStatusCallback, updateLCDSchedules } from '../src/lib/pi-websocket'
 import { formatDate, getPhilippineTime } from '../src/lib/date-utils'
 
 interface Medication {
@@ -506,21 +506,57 @@ export default function Home() {
     }
   }, [router])
 
-  // Connect to Raspberry Pi on page load
+  // Connect to Raspberry Pi on page load and monitor connection status
   useEffect(() => {
-    connectToPi()
-      .then(() => {
-        console.log(' Connected to Pi!')
-        setPiConnected(true)
-      })
-      .catch((error: any) => {
-        console.error(' Could not connect to Pi:', error)
-        setPiConnected(false)
-      })
+    let isMounted = true
+    
+    // Set up connection status callback to update UI automatically
+    setConnectionStatusCallback((connected: boolean) => {
+      if (isMounted) {
+        console.log('📡 Connection status changed:', connected ? 'CONNECTED' : 'DISCONNECTED')
+        setPiConnected(connected)
+      }
+    })
+    
+    // Initial connection attempt with retry logic
+    const attemptConnection = async (retryCount = 0) => {
+      try {
+        console.log(`🔄 Attempting to connect to Pi... (attempt ${retryCount + 1})`)
+        await connectToPi()
+        if (isMounted) {
+          console.log('✅ Connected to Pi!')
+          setPiConnected(true)
+        }
+      } catch (error: any) {
+        console.error(`❌ Connection attempt ${retryCount + 1} failed:`, error)
+        if (isMounted) {
+          setPiConnected(false)
+        }
+        
+        // Retry up to 3 times with exponential backoff
+        if (retryCount < 3 && isMounted) {
+          const delay = Math.min(2000 * Math.pow(2, retryCount), 10000) // 2s, 4s, 8s, max 10s
+          console.log(`⏳ Retrying connection in ${delay/1000} seconds...`)
+          setTimeout(() => {
+            if (isMounted) {
+              attemptConnection(retryCount + 1)
+            }
+          }, delay)
+        } else if (isMounted) {
+          console.log('⚠️ Max retry attempts reached. Will rely on auto-reconnect.')
+          // Auto-reconnect will handle further attempts via onclose handler
+        }
+      }
+    }
+    
+    // Start connection attempt
+    attemptConnection()
 
     return () => {
+      isMounted = false
       disconnectFromPi()
       setButtonPressCallback(null)
+      setConnectionStatusCallback(null)
     }
   }, [])
 

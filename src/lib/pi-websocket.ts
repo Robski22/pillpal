@@ -51,23 +51,59 @@ async function checkUrlAndReconnectIfNeeded() {
 
 export async function connectToPi(): Promise<void> {
   return new Promise(async (resolve, reject) => {
+    // Close existing connection if it exists and is not open
+    if (ws && ws.readyState !== WebSocket.OPEN) {
+      try {
+        ws.close()
+      } catch (e) {
+        // Ignore errors when closing
+      }
+      ws = null
+    }
+    
     if (ws?.readyState === WebSocket.OPEN) {
-      console.log(' Already connected to Pi')
+      console.log('✅ Already connected to Pi')
       resolve()
       return
     }
 
     // Fetch URL at runtime (not build-time!)
-    const PI_URL = await getWebSocketUrl()
+    let PI_URL: string
+    try {
+      PI_URL = await getWebSocketUrl()
+      if (!PI_URL || PI_URL === 'ws://192.168.1.45:8765') {
+        console.warn('⚠️ No valid URL from API, using fallback')
+      }
+    } catch (error) {
+      console.error('❌ Error fetching WebSocket URL:', error)
+      reject(new Error('Failed to fetch WebSocket URL'))
+      return
+    }
+    
     currentUrl = PI_URL
     console.log('🔧 Using WebSocket URL:', PI_URL)
     console.log('🔌 Connecting to Pi at:', PI_URL)
+
+    // Set connection timeout
+    let connectionTimeout: NodeJS.Timeout | null = setTimeout(() => {
+      if (ws && ws.readyState !== WebSocket.OPEN) {
+        console.error('⏱️ Connection timeout after 10 seconds')
+        if (ws) {
+          ws.close()
+        }
+        reject(new Error('Connection timeout'))
+      }
+    }, 10000)
 
     ws = new WebSocket(PI_URL)
     reconnectAttempts = 0
 
     ws.onopen = () => {
-      console.log(' Connected to Pi!')
+      if (connectionTimeout) {
+        clearTimeout(connectionTimeout)
+        connectionTimeout = null
+      }
+      console.log('✅ Connected to Pi!')
       connected = true
       reconnectAttempts = 0 // Reset on successful connection
       
@@ -130,7 +166,12 @@ export async function connectToPi(): Promise<void> {
     }
 
     ws.onerror = (error) => {
-      console.error(' WebSocket connection error')
+      if (connectionTimeout) {
+        clearTimeout(connectionTimeout)
+        connectionTimeout = null
+      }
+      console.error('❌ WebSocket connection error:', error)
+      reject(new Error('WebSocket connection error'))
     }
 
     ws.onclose = (event) => {

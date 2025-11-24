@@ -120,8 +120,10 @@ export async function connectToPi(): Promise<void> {
         if (ws && ws.readyState === WebSocket.OPEN) {
           try {
             // Send ping message to keep connection alive
+            // Note: Server may not support ping, but sending it helps keep the connection active
             ws.send(JSON.stringify({ type: 'ping' }))
-            console.log('💓 Keepalive ping sent')
+            // Don't log every ping to reduce console noise
+            // console.log('💓 Keepalive ping sent')
           } catch (error) {
             console.error('Error sending keepalive ping:', error)
             // If ping fails, connection might be dead - trigger reconnect
@@ -266,6 +268,13 @@ export async function connectToPi(): Promise<void> {
         if (response.type === 'pong' || response.type === 'ping') {
           console.log('💓 Keepalive pong received')
           return // Don't process ping/pong as regular messages
+        }
+        
+        // Handle error responses for ping (server doesn't support ping, that's okay)
+        if (response.status === 'error' && response.message && response.message.includes('ping')) {
+          // Server doesn't support ping messages - that's fine, connection is still alive
+          console.log('💓 Server doesn't support ping (connection still alive)')
+          return // Ignore this error, connection is working
         }
         
         // Handle responses with explicit type field

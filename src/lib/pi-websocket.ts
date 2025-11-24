@@ -6,6 +6,8 @@ let reconnectAttempts = 0
 const MAX_RECONNECT_ATTEMPTS = 5
 let buttonPressCallback: ((pressed: boolean) => void) | null = null
 let messageHandlers: Map<string, (response: any) => void> = new Map()
+let keepAliveInterval: NodeJS.Timeout | null = null
+const KEEPALIVE_INTERVAL = 30000 // Send ping every 30 seconds to keep connection alive
 
 // Fetch WebSocket URL from API at runtime (not build-time!)
 async function getWebSocketUrl(): Promise<string> {
@@ -39,6 +41,30 @@ export async function connectToPi(): Promise<void> {
     ws.onopen = () => {
       console.log(' Connected to Pi!')
       connected = true
+      reconnectAttempts = 0 // Reset on successful connection
+      
+      // Start keepalive ping to prevent connection timeout
+      if (keepAliveInterval) {
+        clearInterval(keepAliveInterval)
+      }
+      keepAliveInterval = setInterval(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try {
+            // Send ping message to keep connection alive
+            ws.send(JSON.stringify({ type: 'ping' }))
+            console.log('💓 Keepalive ping sent')
+          } catch (error) {
+            console.error('Error sending keepalive ping:', error)
+          }
+        } else {
+          // Connection is closed, clear interval
+          if (keepAliveInterval) {
+            clearInterval(keepAliveInterval)
+            keepAliveInterval = null
+          }
+        }
+      }, KEEPALIVE_INTERVAL)
+      
       resolve()
     }
 
@@ -46,15 +72,30 @@ export async function connectToPi(): Promise<void> {
       console.error(' WebSocket connection error')
     }
 
-    ws.onclose = () => {
-      console.log(' Disconnected')
+    ws.onclose = (event) => {
+      console.log(' Disconnected', event.code, event.reason)
       connected = false
       
-      // Auto-reconnect
+      // Clear keepalive interval
+      if (keepAliveInterval) {
+        clearInterval(keepAliveInterval)
+        keepAliveInterval = null
+      }
+      
+      // Auto-reconnect with fresh URL from API
       if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
         reconnectAttempts++
         console.log(` Reconnecting... (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`)
-        setTimeout(() => connectToPi(), 3000)
+        // Fetch fresh URL on reconnect to handle tunnel URL changes
+        setTimeout(async () => {
+          try {
+            await connectToPi()
+          } catch (error) {
+            console.error('Reconnection failed:', error)
+          }
+        }, 3000)
+      } else {
+        console.error(' Max reconnection attempts reached. Please refresh the page or check the tunnel URL.')
       }
     }
 
@@ -81,6 +122,12 @@ export async function connectToPi(): Promise<void> {
             console.log('💡 This means the callback was not registered or was cleared')
           }
           return // Don't process further for button presses
+        }
+        
+        // Handle ping/pong for keepalive
+        if (response.type === 'pong' || response.type === 'ping') {
+          console.log('💓 Keepalive pong received')
+          return // Don't process ping/pong as regular messages
         }
         
         // Handle responses with explicit type field
@@ -135,6 +182,12 @@ export async function connectToPi(): Promise<void> {
 }
 
 export function disconnectFromPi() {
+  // Clear keepalive interval
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval)
+    keepAliveInterval = null
+  }
+  
   if (ws) {
     ws.close()
     ws = null

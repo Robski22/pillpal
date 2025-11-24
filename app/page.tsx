@@ -255,6 +255,7 @@ export default function Home() {
         selectedDate: null, // Will be set by fetchDayDataWithUserId
         medications: { morning: [], afternoon: [], evening: [] },
         timeFrameTimes: { morning: null, afternoon: null, evening: null },
+        timeFrameRequireConfirmation: { morning: false, afternoon: false, evening: false }, // Default: automatic dispense (OFF)
         status: 'ready', 
         servoNumber: 1,
         dispensedTimeFrames: []
@@ -265,6 +266,7 @@ export default function Home() {
         selectedDate: null, // Will be set by fetchDayDataWithUserId
         medications: { morning: [], afternoon: [], evening: [] },
         timeFrameTimes: { morning: null, afternoon: null, evening: null },
+        timeFrameRequireConfirmation: { morning: false, afternoon: false, evening: false }, // Default: automatic dispense (OFF)
         status: 'ready', 
         servoNumber: 1,
         dispensedTimeFrames: []
@@ -2055,10 +2057,18 @@ export default function Home() {
       const medicationNames = frameMedications.map(m => m.medication_name).join(', ')
 
       // Check if confirmation is required for this time frame
+      // Ensure targetTimeFrame is not null before checking
+      if (!targetTimeFrame) {
+        showNotification('No time frame selected. Please select a time frame to dispense.', 'warning')
+        return
+      }
+      
       const requireConfirmation = day.timeFrameRequireConfirmation[targetTimeFrame] ?? false
       
       // If confirmation is required and not force dispense, show confirmation dialog
       if (requireConfirmation && !forceDispense) {
+        // Store targetTimeFrame in a const to ensure it's not null in the closure
+        const confirmedTimeFrame: 'morning' | 'afternoon' | 'evening' = targetTimeFrame
         return new Promise<void>((resolve) => {
           setServo2ConfirmDialog({
             onConfirm: async () => {
@@ -2076,13 +2086,13 @@ export default function Home() {
                 )
 
                 // Calculate target angle for this specific time frame
-                const targetAngle = getAngleForTimeFrame(dayOfWeek, targetTimeFrame)
+                const targetAngle = getAngleForTimeFrame(dayOfWeek, confirmedTimeFrame)
                 const currentAngle = lastServo1Angle ?? 0
                 
-                console.log(`🎯 Time frame dispense: ${day.name} ${TIME_FRAMES[targetTimeFrame].label} → Target angle: ${targetAngle}° (Current: ${currentAngle}°)`)
+                console.log(`🎯 Time frame dispense: ${day.name} ${TIME_FRAMES[confirmedTimeFrame].label} → Target angle: ${targetAngle}° (Current: ${currentAngle}°)`)
                 
                 // Move directly to the target angle for this time frame
-                const response = await dispenseToPi('servo1', medicationNames, targetAngle, day.selectedDate || undefined, scheduledTime, targetTimeFrame)
+                const response = await dispenseToPi('servo1', medicationNames, targetAngle, day.selectedDate || undefined, scheduledTime, confirmedTimeFrame)
                 console.log('✅ Manual dispense bundle response:', response)
                 
                 // Update last known servo1 angle from response
@@ -2094,7 +2104,7 @@ export default function Home() {
                 // This will be handled by the existing code flow below
                 // For now, we'll just mark as successful and let the rest of the function handle it
                 if (response?.success) {
-                  showNotification(`✅ Dispensed ${medicationNames} for ${TIME_FRAMES[targetTimeFrame].label}!`, 'success')
+                  showNotification(`✅ Dispensed ${medicationNames} for ${TIME_FRAMES[confirmedTimeFrame].label}!`, 'success')
                   
                   // Mark this time frame as dispensed
                   setDays(prevDays => 
@@ -2103,7 +2113,7 @@ export default function Home() {
                         ? { 
                             ...d, 
                             status: 'ready',
-                            dispensedTimeFrames: [...(d.dispensedTimeFrames || []), targetTimeFrame]
+                            dispensedTimeFrames: [...(d.dispensedTimeFrames || []), confirmedTimeFrame]
                           }
                         : d
                     )
@@ -2130,7 +2140,7 @@ export default function Home() {
               showNotification('Dispense cancelled', 'info')
               resolve()
             },
-            timeFrame: targetTimeFrame
+            timeFrame: confirmedTimeFrame
           })
         })
       }

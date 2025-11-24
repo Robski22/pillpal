@@ -138,18 +138,34 @@ export async function connectToPi(): Promise<void> {
         }
       }, KEEPALIVE_INTERVAL)
       
-      // Start connection health check
+      // Start connection health check (more frequent to catch disconnections quickly)
       if (connectionCheckInterval) {
         clearInterval(connectionCheckInterval)
       }
       connectionCheckInterval = setInterval(() => {
         if (!ws || ws.readyState !== WebSocket.OPEN) {
           console.log('⚠️ Connection health check failed - reconnecting...')
+          connected = false
+          if (connectionStatusCallback) {
+            connectionStatusCallback(false)
+          }
           if (ws) {
-            ws.close()
-          } else {
-            // No connection exists, try to connect
-            connectToPi().catch(err => console.error('Health check reconnect failed:', err))
+            try {
+              ws.close()
+            } catch (e) {
+              // Ignore errors
+            }
+            ws = null
+          }
+          // Reconnect immediately
+          connectToPi().catch(err => console.error('Health check reconnect failed:', err))
+        } else {
+          // Connection is healthy - ensure status is correct
+          if (!connected) {
+            connected = true
+            if (connectionStatusCallback) {
+              connectionStatusCallback(true)
+            }
           }
         }
       }, CONNECTION_CHECK_INTERVAL)
@@ -201,16 +217,21 @@ export async function connectToPi(): Promise<void> {
         urlRefreshInterval = null
       }
       
-      // Auto-reconnect with fresh URL from API (infinite retries)
+      // Auto-reconnect with fresh URL from API (infinite retries, faster initial retry)
       reconnectAttempts++
-      const delay = Math.min(3000 + (reconnectAttempts * 1000), 30000) // Exponential backoff, max 30 seconds
-      console.log(` Reconnecting... (attempt ${reconnectAttempts}, delay: ${delay}ms)`)
+      // Faster initial retries: 1s, 2s, 3s, then exponential backoff
+      const delay = reconnectAttempts <= 3 
+        ? reconnectAttempts * 1000 
+        : Math.min(3000 + ((reconnectAttempts - 3) * 1000), 30000)
+      console.log(`🔄 Reconnecting... (attempt ${reconnectAttempts}, delay: ${delay}ms)`)
       // Fetch fresh URL on reconnect to handle tunnel URL changes
       setTimeout(async () => {
         try {
+          console.log(`🔄 Attempting reconnection ${reconnectAttempts}...`)
           await connectToPi()
+          console.log(`✅ Reconnection ${reconnectAttempts} successful!`)
         } catch (error) {
-          console.error('Reconnection failed:', error)
+          console.error(`❌ Reconnection ${reconnectAttempts} failed:`, error)
           // Will retry again on next onclose event
         }
       }, delay)

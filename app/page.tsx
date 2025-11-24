@@ -518,7 +518,7 @@ export default function Home() {
       }
     })
     
-    // Initial connection attempt with retry logic
+    // Initial connection attempt with aggressive retry logic
     const attemptConnection = async (retryCount = 0) => {
       try {
         console.log(`🔄 Attempting to connect to Pi... (attempt ${retryCount + 1})`)
@@ -533,9 +533,11 @@ export default function Home() {
           setPiConnected(false)
         }
         
-        // Retry up to 3 times with exponential backoff
-        if (retryCount < 3 && isMounted) {
-          const delay = Math.min(2000 * Math.pow(2, retryCount), 10000) // 2s, 4s, 8s, max 10s
+        // More aggressive retry: up to 5 times with faster initial retries
+        if (retryCount < 5 && isMounted) {
+          // Faster initial retries: 1s, 2s, 3s, then 5s, 10s
+          const delays = [1000, 2000, 3000, 5000, 10000]
+          const delay = delays[retryCount] || 10000
           console.log(`⏳ Retrying connection in ${delay/1000} seconds...`)
           setTimeout(() => {
             if (isMounted) {
@@ -543,14 +545,30 @@ export default function Home() {
             }
           }, delay)
         } else if (isMounted) {
-          console.log('⚠️ Max retry attempts reached. Will rely on auto-reconnect.')
+          console.log('⚠️ Initial retry attempts exhausted. Auto-reconnect will continue...')
           // Auto-reconnect will handle further attempts via onclose handler
         }
       }
     }
     
-    // Start connection attempt
+    // Start connection attempt immediately
     attemptConnection()
+    
+    // Also set up a periodic connection check to ensure we stay connected
+    const connectionCheckInterval = setInterval(() => {
+      if (isMounted && !isConnectedToPi()) {
+        console.log('⚠️ Connection check: Not connected, attempting to reconnect...')
+        attemptConnection(0).catch(err => console.error('Periodic reconnect failed:', err))
+      }
+    }, 30000) // Check every 30 seconds
+    
+    return () => {
+      isMounted = false
+      clearInterval(connectionCheckInterval)
+      disconnectFromPi()
+      setButtonPressCallback(null)
+      setConnectionStatusCallback(null)
+    }
 
     return () => {
       isMounted = false

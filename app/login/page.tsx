@@ -365,7 +365,7 @@ export default function Login() {
 
       {/* Custom Access Denied Modal - replaces browser alert */}
       {showAccessDeniedModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 bg-white bg-opacity-75 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
             <div className="mb-4">
               <h2 className="text-xl font-bold text-gray-800 mb-2">Access Denied</h2>
@@ -374,7 +374,7 @@ export default function Login() {
             </div>
             <button
               onClick={() => setShowAccessDeniedModal(false)}
-              className="w-full px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition font-medium"
+              className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
             >
               OK
             </button>

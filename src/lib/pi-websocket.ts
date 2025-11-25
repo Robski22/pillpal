@@ -211,7 +211,7 @@ export async function connectToPi(): Promise<void> {
         )
         const { data: { session } } = await supabase.auth.getSession()
         
-        if (session?.user?.email) {
+        if (session?.user?.email && ws) {
           // Request Pi unique ID from server
           ws.send(JSON.stringify({ type: 'get_pi_id' }))
           console.log('🔍 Requesting Pi unique ID for verification...')
@@ -579,7 +579,7 @@ export function dispenseToPi(servoId: string, medication: string, targetAngle?: 
     }
 
     console.log('📤 Sending dispense command:', JSON.stringify(message))
-    ws.send(JSON.stringify(message))
+    ws!.send(JSON.stringify(message))
     
     const timeout = setTimeout(() => {
       console.error(' Dispense timeout - no response from Pi')
@@ -620,7 +620,7 @@ export function sendSmsViaPi(phoneNumber: string | string[], message: string): P
     })
 
     console.log('📤 Sending SMS via Pi:', phoneNumber)
-    ws.send(smsMessage)
+    ws!.send(smsMessage)
     
     const timeout = setTimeout(() => {
       console.error(' SMS timeout - no response from Pi')
@@ -670,7 +670,7 @@ export function confirmServo2Dispense(date?: string, time?: string, timeFrame?: 
     const messageStr = JSON.stringify(message)
 
     console.log('📤 Sending servo2 dispense confirmation:', messageStr)
-    ws.send(messageStr)
+    ws!.send(messageStr)
     
     const timeout = setTimeout(() => {
       console.error(' Servo2 dispense timeout - no response from Pi')
@@ -719,7 +719,7 @@ export function updateLCDSchedules(schedules: Array<{time: string, medication?: 
     })
 
     console.log('📤 Sending schedule update to LCD:', schedules)
-    ws.send(message)
+    ws!.send(message)
     
     const timeout = setTimeout(() => {
       console.error(' LCD schedule update timeout - no response from Pi')

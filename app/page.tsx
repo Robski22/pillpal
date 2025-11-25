@@ -3678,8 +3678,7 @@ export default function Home() {
       {/* Confirmation Preference Dialog - Shown after adding medicine */}
       {/* Dispense Preference modal - TEMPORARILY DISABLED */}
       {false && confirmationPreferenceDialog && (() => {
-        if (!confirmationPreferenceDialog) return null
-        const dialog = confirmationPreferenceDialog
+        const dialog = confirmationPreferenceDialog!
         return (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl p-6 sm:p-8 w-full max-w-md shadow-2xl">

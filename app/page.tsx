@@ -3677,14 +3677,17 @@ export default function Home() {
 
       {/* Confirmation Preference Dialog - Shown after adding medicine */}
       {/* Dispense Preference modal - TEMPORARILY DISABLED */}
-      {false && confirmationPreferenceDialog && (
+      {false && confirmationPreferenceDialog && (() => {
+        if (!confirmationPreferenceDialog) return null
+        const dialog = confirmationPreferenceDialog
+        return (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl p-6 sm:p-8 w-full max-w-md shadow-2xl">
             <div className="text-center mb-6">
               <div className="text-5xl mb-4">⚙️</div>
               <h3 className="text-xl sm:text-2xl font-bold text-gray-800 mb-2">Dispense Preference</h3>
               <p className="text-sm text-gray-600 mb-4">
-                How should <span className="font-semibold">{confirmationPreferenceDialog.medicationName}</span> be dispensed?
+                How should <span className="font-semibold">{dialog.medicationName}</span> be dispensed?
               </p>
             </div>
             
@@ -3693,15 +3696,15 @@ export default function Home() {
                 <div className="flex-1">
                   <div className="font-semibold text-gray-800 mb-1">
                     {(() => {
-                      const day = days.find(d => d.dayOfWeek === confirmationPreferenceDialog.dayOfWeek)
-                      const timeFrameLabel = TIME_FRAMES[confirmationPreferenceDialog.timeFrame].label
+                      const day = days.find(d => d.dayOfWeek === dialog.dayOfWeek)
+                      const timeFrameLabel = TIME_FRAMES[dialog.timeFrame].label
                       return `${day?.name || ''} ${timeFrameLabel}`
                     })()}
                   </div>
                   <div className="text-sm text-gray-600">
                     {(() => {
-                      const day = days.find(d => d.dayOfWeek === confirmationPreferenceDialog.dayOfWeek)
-                      const requireConfirmation = day?.timeFrameRequireConfirmation[confirmationPreferenceDialog.timeFrame] ?? false
+                      const day = days.find(d => d.dayOfWeek === dialog.dayOfWeek)
+                      const requireConfirmation = day?.timeFrameRequireConfirmation[dialog.timeFrame] ?? false
                       return requireConfirmation 
                         ? 'Confirmation required before dispensing'
                         : 'Automatic dispense at scheduled time'
@@ -3712,23 +3715,23 @@ export default function Home() {
                   <input
                     type="checkbox"
                     checked={(() => {
-                      const day = days.find(d => d.dayOfWeek === confirmationPreferenceDialog.dayOfWeek)
-                      return day?.timeFrameRequireConfirmation[confirmationPreferenceDialog.timeFrame] ?? false
+                      const day = days.find(d => d.dayOfWeek === dialog.dayOfWeek)
+                      return day?.timeFrameRequireConfirmation[dialog.timeFrame] ?? false
                     })()}
                     onChange={async (e) => {
                       const requireConfirmation = e.target.checked
-                      const day = days.find(d => d.dayOfWeek === confirmationPreferenceDialog.dayOfWeek)
+                      const day = days.find(d => d.dayOfWeek === dialog.dayOfWeek)
                       if (!day) return
                       
                       // Update local state immediately
                       setDays(prevDays => 
                         prevDays.map(d => 
-                          d.dayOfWeek === confirmationPreferenceDialog.dayOfWeek
+                          d.dayOfWeek === dialog.dayOfWeek
                             ? {
                                 ...d,
                                 timeFrameRequireConfirmation: {
                                   ...d.timeFrameRequireConfirmation,
-                                  [confirmationPreferenceDialog.timeFrame]: requireConfirmation
+                                  [dialog.timeFrame]: requireConfirmation
                                 }
                               }
                             : d
@@ -3748,8 +3751,8 @@ export default function Home() {
                           }
                         }
                         
-                        const dbDayOfWeek = confirmationPreferenceDialog.dayOfWeek
-                        const updateField = `${confirmationPreferenceDialog.timeFrame}_require_confirmation`
+                        const dbDayOfWeek = dialog.dayOfWeek
+                        const updateField = `${dialog.timeFrame}_require_confirmation`
                         
                         const { data: config } = await supabase
                           .from('day_config')
@@ -3798,7 +3801,8 @@ export default function Home() {
             </button>
           </div>
         </div>
-      )}
+        )
+      })()}
 
       {/* Servo2 Confirmation Dialog - Medicine Dispense */}
       {servo2ConfirmDialog && (

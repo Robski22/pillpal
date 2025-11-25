@@ -43,3 +43,4 @@ sudo journalctl -u cloudflared-tunnel -n 200 | grep -oP 'https://[a-z0-9-]+\.try
 This will show the CURRENT tunnel URL. Make sure the database matches this!
 
 
+

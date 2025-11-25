@@ -124,3 +124,4 @@ SET websocket_url = 'wss://pillpal.yourdomain.com',
 
 
 
+

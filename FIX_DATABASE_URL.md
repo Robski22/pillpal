@@ -82,3 +82,4 @@ Should now show script output!
 The auto-update script is hanging on the `sudo journalctl` password prompt, so it never updates the database. Once you configure passwordless sudo, it should work automatically on every boot.
 
 
+

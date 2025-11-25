@@ -133,3 +133,4 @@ Then update Supabase with the correct URL.
 3. You should see: `✅ Connected to Pi!`
 4. The yellow banner should change to green: "✅ Connected to Raspberry Pi"
 
+

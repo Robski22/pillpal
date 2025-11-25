@@ -52,3 +52,4 @@ echo "Check Supabase to verify URL was updated"
 echo "Then test your web app - it should auto-connect!"
 
 
+

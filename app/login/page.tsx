@@ -45,10 +45,27 @@ export default function Login() {
     setError(null)
 
     try {
+      // Check if email is allowed (whitelist check)
+      const emailToCheck = email.trim().toLowerCase()
+      const checkResponse = await fetch('/api/check-allowed-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: emailToCheck })
+      })
+      
+      const checkResult = await checkResponse.json()
+      
+      if (!checkResult.allowed) {
+        setError(checkResult.message || 'This email is not authorized to access this application')
+        alert(`❌ Access Denied\n\n${checkResult.message || 'This email is not authorized to access this application'}\n\nPlease contact the administrator if you believe this is an error.`)
+        setLoading(false)
+        return
+      }
+
       if (isSignUp) {
         // SIMPLE SIGNUP - No profile creation, just basic signup
         const { data, error } = await supabase.auth.signUp({
-          email: email.trim().toLowerCase(),
+          email: emailToCheck,
           password: password,
           options: {
             emailRedirectTo: getRedirectUrl('/'), // Redirect to home page after email confirmation
@@ -107,13 +124,41 @@ export default function Login() {
           alert(' Account was not created. Please try again.')
         }
       } else {
-        // Sign in
+        // Sign in - email already checked above, just sign in
         const { error } = await supabase.auth.signInWithPassword({
-          email: email,
+          email: emailToCheck,
           password: password,
         })
         
-        if (error) throw error
+        if (error) {
+          // Check if it's because email doesn't exist - still block it if not allowed
+          if (error.message?.toLowerCase().includes('invalid') || error.message?.toLowerCase().includes('credentials')) {
+            // Don't reveal if email exists or not - just show generic error
+            setError('Invalid email or password')
+          } else {
+            setError(error.message)
+          }
+          setLoading(false)
+          return
+        }
+        
+        // Double-check email is allowed after successful login (security)
+        const verifyResponse = await fetch('/api/check-allowed-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: emailToCheck })
+        })
+        const verifyResult = await verifyResponse.json()
+        
+        if (!verifyResult.allowed) {
+          // Sign out if email is not allowed
+          await supabase.auth.signOut()
+          setError('This email is not authorized to access this application')
+          alert(`❌ Access Denied\n\n${verifyResult.message || 'This email is not authorized to access this application'}\n\nYou have been signed out.`)
+          setLoading(false)
+          return
+        }
+        
         router.push('/')
       }
     } catch (error: any) {

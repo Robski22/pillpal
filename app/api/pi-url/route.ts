@@ -20,38 +20,34 @@ function normalizeWebSocketUrl(url: string): string {
 
 export async function GET() {
   try {
+    // Create abort controller for timeout
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 2000) // 2 second timeout
+    
     const { data, error } = await supabase
       .from('pi_connection_config')
       .select('websocket_url')
       .single()
+      .abortSignal(controller.signal)
+
+    clearTimeout(timeoutId)
 
     let url = ''
     if (error) {
-      console.error('❌ Error fetching Pi URL from database:', error)
+      // Silently use fallback - don't log errors to reduce noise
       url = process.env.NEXT_PUBLIC_PI_WEBSOCKET_URL || ''
-      console.log('📋 Using fallback URL from env:', url)
     } else {
       url = data?.websocket_url || process.env.NEXT_PUBLIC_PI_WEBSOCKET_URL || ''
-      console.log('📋 Fetched URL from database:', url)
     }
 
     // Normalize the URL before returning
-    const originalUrl = url
     url = normalizeWebSocketUrl(url)
-    
-    if (originalUrl !== url) {
-      console.log('🔧 URL normalized:', originalUrl, '→', url)
-    }
-    
-    console.log('✅ Returning URL to client:', url)
-    console.log('   URL length:', url.length, 'Ends with /:', url.endsWith('/'))
 
     return NextResponse.json({ url })
   } catch (error) {
-    console.error('❌ Error in API route:', error)
+    // Silently use fallback - don't log errors to reduce noise
     let url = process.env.NEXT_PUBLIC_PI_WEBSOCKET_URL || ''
     url = normalizeWebSocketUrl(url)
-    console.log('📋 Using fallback URL due to error:', url)
     return NextResponse.json({ url })
   }
 }

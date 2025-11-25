@@ -15,6 +15,44 @@ let urlRefreshInterval: NodeJS.Timeout | null = null
 const URL_REFRESH_INTERVAL = 60000 // Check for URL changes every 60 seconds
 let currentUrl: string | null = null
 
+// Verify Pi unique ID with server
+async function verifyPiUniqueId(piUniqueId: string): Promise<void> {
+  try {
+    const { createClient } = await import('@supabase/supabase-js')
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    )
+    const { data: { session } } = await supabase.auth.getSession()
+    
+    if (!session?.user?.email) {
+      console.warn('⚠️ No user session for Pi ID verification')
+      return
+    }
+
+    const response = await fetch('/api/verify-pi-id', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        pi_unique_id: piUniqueId,
+        user_email: session.user.email
+      })
+    })
+
+    const result = await response.json()
+    
+    if (result.verified) {
+      console.log('✅ Pi unique ID verified successfully')
+    } else {
+      console.error('❌ Pi unique ID verification failed:', result.error)
+      // Optionally disconnect if verification fails
+      // if (ws) ws.close()
+    }
+  } catch (error) {
+    console.error('❌ Error verifying Pi ID:', error)
+  }
+}
+
 // Normalize WebSocket URL - remove trailing slashes and ensure proper format
 function normalizeWebSocketUrl(url: string): string {
   if (!url) return url
@@ -134,17 +172,17 @@ export async function connectToPi(): Promise<void> {
     console.log('🔌 Connecting to Pi at:', PI_URL)
     console.log('🔍 URL length:', PI_URL.length, 'Ends with /:', PI_URL.endsWith('/'))
 
-    // Set connection timeout
+    // Set connection timeout (reduced from 10s to 5s for faster feedback)
     let connectionTimeout: NodeJS.Timeout | null = setTimeout(() => {
       if (ws && ws.readyState !== WebSocket.OPEN) {
-        console.error('⏱️ Connection timeout after 10 seconds')
+        console.error('⏱️ Connection timeout after 5 seconds')
         console.error('   Attempted URL:', PI_URL)
         if (ws) {
           ws.close()
         }
         reject(new Error(`Connection timeout to ${PI_URL}`))
       }
-    }, 10000)
+    }, 5000)
 
     try {
       console.log('🚀 Creating WebSocket with normalized URL:', PI_URL)
@@ -156,12 +194,33 @@ export async function connectToPi(): Promise<void> {
     }
     reconnectAttempts = 0
 
-    ws.onopen = () => {
+    ws.onopen = async () => {
       if (connectionTimeout) {
         clearTimeout(connectionTimeout)
         connectionTimeout = null
       }
       console.log('✅ Connected to Pi!')
+      
+      // Verify Pi unique ID (if configured)
+      try {
+        // Get current user email
+        const { createClient } = await import('@supabase/supabase-js')
+        const supabase = createClient(
+          process.env.NEXT_PUBLIC_SUPABASE_URL!,
+          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+        )
+        const { data: { session } } = await supabase.auth.getSession()
+        
+        if (session?.user?.email) {
+          // Request Pi unique ID from server
+          ws.send(JSON.stringify({ type: 'get_pi_id' }))
+          console.log('🔍 Requesting Pi unique ID for verification...')
+        }
+      } catch (error) {
+        console.warn('⚠️ Could not verify Pi ID:', error)
+        // Continue anyway - verification is optional
+      }
+      
       connected = true
       reconnectAttempts = 0 // Reset on successful connection
       
@@ -336,6 +395,19 @@ export async function connectToPi(): Promise<void> {
         if (response.type === 'pong' || response.type === 'ping') {
           console.log('Keepalive pong received')
           return // Don't process ping/pong as regular messages
+        }
+        
+        // Handle Pi unique ID response
+        if (response.type === 'pi_id') {
+          const piUniqueId = response.pi_unique_id
+          if (piUniqueId) {
+            console.log('🔍 Received Pi unique ID:', piUniqueId)
+            // Verify Pi ID with server
+            verifyPiUniqueId(piUniqueId).catch(err => {
+              console.warn('⚠️ Pi ID verification failed:', err)
+            })
+          }
+          return
         }
         
         // Handle error responses for ping (server doesn't support ping, that's okay)

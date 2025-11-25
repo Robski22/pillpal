@@ -62,3 +62,4 @@ The script might not be logging to journalctl. Check:
 3. Script has execute permissions: `chmod +x ~/scripts/update_tunnel_url.sh`
 
 
+

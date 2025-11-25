@@ -181,6 +181,7 @@ export default function Home() {
   const [piConnected, setPiConnected] = useState(false)
   const [ownerUserId, setOwnerUserId] = useState<string | null>(null)
   const [isOwner, setIsOwner] = useState(true)
+  const [dispenseMode, setDispenseMode] = useState<'automatic' | 'manual'>('manual') // 'automatic' or 'manual'
   // Saturday (dayOfWeek = 6) and Sunday (dayOfWeek = 0) - synced with current date
   // All use servo1 (spins 30 degrees each time)
   const [days, setDays] = useState<DayData[]>(() => {
@@ -506,6 +507,39 @@ export default function Home() {
     }
   }, [router])
 
+  // Verify user email is allowed on page load
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (loading || !user) return
+    
+    const verifyEmail = async () => {
+      try {
+        const response = await fetch('/api/check-allowed-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: user.email })
+        })
+        
+        const result = await response.json()
+        
+        if (!result.allowed) {
+          // Email not allowed - sign out and redirect
+          alert(`❌ Access Denied\n\n${result.message || 'This email is not authorized to access this application'}\n\nYou will be signed out.`)
+          await signOut()
+          router.push('/login')
+        }
+      } catch (error) {
+        console.error('Error verifying email:', error)
+        // On error, still block access for security (strict mode)
+        alert(`❌ Access Denied\n\nUnable to verify email authorization.\n\nYou will be signed out.`)
+        await signOut()
+        router.push('/login')
+      }
+    }
+    
+    verifyEmail()
+  }, [user, loading, signOut, router])
+
   // Connect to Raspberry Pi on page load and monitor connection status
   useEffect(() => {
     // Only run on client side
@@ -530,7 +564,7 @@ export default function Home() {
       }
     })
     
-    // Initial connection attempt with aggressive retry logic
+    // Initial connection attempt with faster retry logic
     const attemptConnection = async (retryCount = 0) => {
       try {
         console.log(`🔄 Attempting to connect to Pi... (attempt ${retryCount + 1})`)
@@ -545,11 +579,11 @@ export default function Home() {
           setPiConnected(false)
         }
         
-        // More aggressive retry: up to 5 times with faster initial retries
-        if (retryCount < 5 && isMounted) {
-          // Faster initial retries: 1s, 2s, 3s, then 5s, 10s
-          const delays = [1000, 2000, 3000, 5000, 10000]
-          const delay = delays[retryCount] || 10000
+        // Faster retry: up to 3 times with very fast initial retries
+        if (retryCount < 3 && isMounted) {
+          // Very fast initial retries: 500ms, 1s, 2s
+          const delays = [500, 1000, 2000]
+          const delay = delays[retryCount] || 2000
           console.log(`⏳ Retrying connection in ${delay/1000} seconds...`)
           setTimeout(() => {
             if (isMounted) {
@@ -563,10 +597,9 @@ export default function Home() {
       }
     }
     
-    // Start connection attempt immediately (only if not already connected)
-    if (!initialStatus) {
-      attemptConnection()
-    }
+    // Start connection attempt immediately (don't wait for anything)
+    // Connection is independent of data loading
+    attemptConnection()
     
     // Also set up a periodic connection check to ensure we stay connected
     const connectionCheckInterval = setInterval(() => {
@@ -1079,13 +1112,9 @@ export default function Home() {
     }
     
     console.log('🔄 ownerUserId changed, refetching data for:', ownerUserId, '(isOwner:', isOwner, ')')
-    // Small delay to ensure state is fully updated
-    const timer = setTimeout(() => {
-      console.log('🔄 Executing fetchDayDataWithUserId with ownerUserId:', ownerUserId, 'isOwner:', isOwner)
-      fetchDayDataWithUserId(ownerUserId, isOwner)
-    }, 200)
-    
-    return () => clearTimeout(timer)
+    // Execute immediately - no delay needed
+    console.log('🔄 Executing fetchDayDataWithUserId with ownerUserId:', ownerUserId, 'isOwner:', isOwner)
+    fetchDayDataWithUserId(ownerUserId, isOwner)
   }, [ownerUserId, isOwner, user]) // Refetch when owner/user context changes
 
   // Helper function to refresh session and handle JWT expiration
@@ -2154,14 +2183,7 @@ export default function Home() {
         isInTimeWindow = currentTimeMinutes >= timeWindowStart && currentTimeMinutes <= timeWindowEnd
       }
       
-      // Show confirmation dialog if outside time window (but don't block - user can still confirm)
-      // Skip this check if force dispense is enabled
-      if (!isInTimeWindow && !skipTimeWindowCheck && !forceDispense) {
-        const confirmed = await showConfirm('OUTSIDE THE TIMEFRAME - ARE YOU SURE?')
-        if (!confirmed) {
-          return
-        }
-      }
+      // Removed first confirmation - servo1 will move immediately, servo2 confirmation appears after
       
       // Check if dispensing early (before scheduled time)
       let isEarlyDispense = false
@@ -2207,93 +2229,10 @@ export default function Home() {
       
       const medicationNames = frameMedications.map(m => m.medication_name).join(', ')
 
-      // Check if confirmation is required for this time frame
-      // Ensure targetTimeFrame is not null before checking
+      // Ensure targetTimeFrame is not null before proceeding
       if (!targetTimeFrame) {
         showNotification('No time frame selected. Please select a time frame to dispense.', 'warning')
         return
-      }
-      
-      const requireConfirmation = day.timeFrameRequireConfirmation[targetTimeFrame] ?? false
-      
-      // If confirmation is required and not force dispense, show confirmation dialog
-      if (requireConfirmation && !forceDispense) {
-        // Store targetTimeFrame in a const to ensure it's not null in the closure
-        const confirmedTimeFrame: 'morning' | 'afternoon' | 'evening' = targetTimeFrame
-        return new Promise<void>((resolve) => {
-          setServo2ConfirmDialog({
-            onConfirm: async () => {
-              setServo2ConfirmDialog(null)
-              
-              // Perform the actual dispense
-              try {
-                // Update UI to show dispensing
-                setDays(prevDays => 
-                  prevDays.map(d => 
-                    d.dayOfWeek === dayOfWeek 
-                      ? { ...d, status: 'dispensing' }
-                      : d
-                  )
-                )
-
-                // Calculate target angle for this specific time frame
-                const targetAngle = getAngleForTimeFrame(dayOfWeek, confirmedTimeFrame)
-                const currentAngle = lastServo1Angle ?? 0
-                
-                console.log(`🎯 Time frame dispense: ${day.name} ${TIME_FRAMES[confirmedTimeFrame].label} → Target angle: ${targetAngle}° (Current: ${currentAngle}°)`)
-                
-                // Move directly to the target angle for this time frame
-                const response = await dispenseToPi('servo1', medicationNames, targetAngle, day.selectedDate || undefined, scheduledTime, confirmedTimeFrame)
-                console.log('✅ Manual dispense bundle response:', response)
-                
-                // Update last known servo1 angle from response
-                if (response?.servo1_angle !== undefined) {
-                  setLastServo1Angle(response.servo1_angle)
-                }
-                
-                // Continue with rest of dispense logic (SMS, status updates, etc.)
-                // This will be handled by the existing code flow below
-                // For now, we'll just mark as successful and let the rest of the function handle it
-                if (response?.success) {
-                  showNotification(`✅ Dispensed ${medicationNames} for ${TIME_FRAMES[confirmedTimeFrame].label}!`, 'success')
-                  
-                  // Mark this time frame as dispensed
-                  setDays(prevDays => 
-                    prevDays.map(d => 
-                      d.dayOfWeek === dayOfWeek 
-                        ? { 
-                            ...d, 
-                            status: 'ready',
-                            dispensedTimeFrames: [...(d.dispensedTimeFrames || []), confirmedTimeFrame]
-                          }
-                        : d
-                    )
-                  )
-                } else {
-                  throw new Error(response?.error || 'Dispense failed')
-                }
-              } catch (error: any) {
-                console.error('Dispense error:', error)
-                showNotification(`Error: ${error?.message || 'Failed to dispense'}`, 'error')
-                setDays(prevDays => 
-                  prevDays.map(d => 
-                    d.dayOfWeek === dayOfWeek 
-                      ? { ...d, status: 'ready' }
-                      : d
-                  )
-                )
-              }
-              
-              resolve()
-            },
-            onCancel: () => {
-              setServo2ConfirmDialog(null)
-              showNotification('Dispense cancelled', 'info')
-              resolve()
-            },
-            timeFrame: confirmedTimeFrame
-          })
-        })
       }
 
       // Automatic dispense (no confirmation required)
@@ -2410,11 +2349,11 @@ export default function Home() {
       }
       
       // Show confirmation dialog after successful dispense
-      // Skip dialog if force dispense is enabled
-      if (response?.status === 'success' && !forceDispense) {
+      // Skip dialog if force dispense is enabled OR if mode is automatic
+      if (response?.status === 'success' && !forceDispense && dispenseMode === 'manual') {
         // Check if we should show dialog based on state
         if (servo2DialogState.showAfterNextDispense) {
-          console.log('✅ Dispense successful, showing confirmation dialog')
+          console.log('✅ Dispense successful, showing confirmation dialog (Manual mode)')
           if (isAt180) {
             console.log('🔄 Servo1 is at 180° - will reset to 0° if confirmed')
           }
@@ -2428,25 +2367,26 @@ export default function Home() {
         } else {
           console.log('⏭️ Skipping dialog - waiting for timeout or next dispense (user clicked NO twice)')
         }
-      } else if (response?.status === 'success' && forceDispense) {
-        console.log('🔧 Force dispense - skipping dialog, servo2 will move automatically')
-        // For force dispense, automatically trigger servo2 movement after 1 second
+      } else if (response?.status === 'success' && (forceDispense || dispenseMode === 'automatic')) {
+        const modeLabel = forceDispense ? 'Force dispense' : 'Automatic mode'
+        console.log(`🔧 ${modeLabel} - skipping dialog, servo2 will move automatically`)
+        // For automatic/force dispense, automatically trigger servo2 movement after 1 second
         setTimeout(async () => {
-          console.log('🎯 Force dispense: Automatically moving servo2 after 1 second delay')
+          console.log(`🎯 ${modeLabel}: Automatically moving servo2 after 1 second delay`)
           try {
             const servo2Response = await confirmServo2Dispense(day.selectedDate || undefined, scheduledTime, targetTimeFrame || undefined)
             if (servo2Response?.status === 'success') {
               if (isAt180 && servo2Response?.servo1_reset) {
                 setLastServo1Angle(0)
-                showNotification('Force dispense complete! App reset - ready for next cycle.', 'success')
+                showNotification(`${modeLabel === 'Automatic mode' ? 'Automatic' : 'Force'} dispense complete! App reset - ready for next cycle.`, 'success')
               } else {
-                showNotification('Force dispense complete!', 'success')
+                showNotification(`${modeLabel === 'Automatic mode' ? 'Automatic' : 'Force'} dispense complete!`, 'success')
               }
             } else {
-              showNotification('Force dispense failed', 'error')
+              showNotification(`${modeLabel} failed`, 'error')
             }
           } catch (error: any) {
-            console.error('❌ Error in force dispense servo2:', error)
+            console.error(`❌ Error in ${modeLabel} servo2:`, error)
             showNotification(`Error: ${error.message || 'Failed'}`, 'error')
           }
         }, 1000)
@@ -3125,7 +3065,26 @@ export default function Home() {
       {/* Header - More compact on mobile */}
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 sm:gap-0 mb-3 sm:mb-8">
         <h1 className="text-lg sm:text-2xl md:text-3xl font-bold text-gray-800">PillPal Dashboard</h1>
-        <div className="flex flex-wrap gap-1.5 sm:gap-3 md:gap-4">
+        <div className="flex flex-wrap gap-1.5 sm:gap-3 md:gap-4 items-center">
+          {/* Dispense Mode Toggle */}
+          <div className="flex items-center gap-2 px-2.5 py-1.5 sm:px-4 sm:py-2 bg-gray-100 rounded">
+            <span className="text-xs sm:text-sm text-gray-600 font-medium">Mode:</span>
+            <button
+              onClick={() => setDispenseMode(dispenseMode === 'automatic' ? 'manual' : 'automatic')}
+              className={`relative inline-flex items-center h-6 w-11 rounded-full transition-colors ${
+                dispenseMode === 'automatic' ? 'bg-blue-600' : 'bg-gray-300'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  dispenseMode === 'automatic' ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+            <span className="text-xs sm:text-sm font-medium min-w-[70px]">
+              {dispenseMode === 'automatic' ? 'Automatic' : 'Manual'}
+            </span>
+          </div>
           <button
             onClick={() => router.push('/history')}
             className="px-2.5 py-1.5 sm:px-4 sm:py-2 text-xs sm:text-base text-gray-700 hover:bg-gray-100 rounded transition"
@@ -3717,7 +3676,8 @@ export default function Home() {
       )}
 
       {/* Confirmation Preference Dialog - Shown after adding medicine */}
-      {confirmationPreferenceDialog && (
+      {/* Dispense Preference modal - TEMPORARILY DISABLED */}
+      {false && confirmationPreferenceDialog && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl p-6 sm:p-8 w-full max-w-md shadow-2xl">
             <div className="text-center mb-6">

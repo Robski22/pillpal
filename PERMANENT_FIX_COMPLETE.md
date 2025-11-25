@@ -352,3 +352,4 @@ All should show "enabled".
 - Check browser console (F12) for errors
 - Verify tunnel URL in database matches what's in logs
 
+

@@ -53,3 +53,4 @@ Make sure your script has the correct service role key:
 After this, the database will auto-update on every boot!
 
 
+

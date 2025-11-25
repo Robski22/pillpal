@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Check Tunnel URL</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        .result {
+            background: #f0f0f0;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+            word-break: break-all;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔍 Check Current Tunnel URL</h1>
+    <p>This will show you what WebSocket URL your app is trying to use.</p>
+    
+    <button onclick="checkUrl()">Check URL</button>
+    
+    <div id="result"></div>
+
+    <script>
+        async function checkUrl() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '<p>Checking...</p>';
+            
+            try {
+                const response = await fetch('/api/pi-url');
+                const data = await response.json();
+                
+                resultDiv.innerHTML = `
+                    <div class="result">
+                        <h3>Current WebSocket URL:</h3>
+                        <p><strong>${data.url || 'NOT SET'}</strong></p>
+                        <p><small>This is the URL your app is trying to connect to.</small></p>
+                    </div>
+                    <div class="result">
+                        <h3>Next Steps:</h3>
+                        <ul>
+                            <li>If URL is empty or shows a local IP (192.168.x.x), you need to set up a tunnel</li>
+                            <li>If URL shows a tunnel URL, make sure the tunnel is running on your Pi</li>
+                            <li>Update the database with: <code>UPDATE pi_connection_config SET websocket_url = 'wss://YOUR_TUNNEL_URL' WHERE id = 1;</code></li>
+                        </ul>
+                    </div>
+                `;
+            } catch (error) {
+                resultDiv.innerHTML = `<div class="result" style="background: #ffebee; color: #c62828;">
+                    <h3>Error:</h3>
+                    <p>${error.message}</p>
+                </div>`;
+            }
+        }
+    </script>
+</body>
+</html>
+
+
+

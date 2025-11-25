@@ -508,7 +508,19 @@ export default function Home() {
 
   // Connect to Raspberry Pi on page load and monitor connection status
   useEffect(() => {
+    // Only run on client side
+    if (typeof window === 'undefined') return
+    
     let isMounted = true
+    
+    // Check initial connection status
+    const initialStatus = isConnectedToPi()
+    if (isMounted) {
+      setPiConnected(initialStatus)
+      if (initialStatus) {
+        console.log('✅ Already connected to Pi')
+      }
+    }
     
     // Set up connection status callback to update UI automatically
     setConnectionStatusCallback((connected: boolean) => {
@@ -551,8 +563,10 @@ export default function Home() {
       }
     }
     
-    // Start connection attempt immediately
-    attemptConnection()
+    // Start connection attempt immediately (only if not already connected)
+    if (!initialStatus) {
+      attemptConnection()
+    }
     
     // Also set up a periodic connection check to ensure we stay connected
     const connectionCheckInterval = setInterval(() => {
@@ -565,13 +579,6 @@ export default function Home() {
     return () => {
       isMounted = false
       clearInterval(connectionCheckInterval)
-      disconnectFromPi()
-      setButtonPressCallback(null)
-      setConnectionStatusCallback(null)
-    }
-
-    return () => {
-      isMounted = false
       disconnectFromPi()
       setButtonPressCallback(null)
       setConnectionStatusCallback(null)
@@ -1485,35 +1492,81 @@ export default function Home() {
           // Fall back to localStorage, then auto-calculate
           let selectedDateFromDB = config.selected_date || null
           
-          // Auto-sync date if not in database
+          // Auto-sync date - always calculate current week's Saturday/Sunday
           const now = getPhilippineTime()
           const currentDayOfWeek = now.getDay()
           let autoDate: string | null = null
           
-          if (currentDayOfWeek === 6 && mapping.uiDay === 6) { // Today is Saturday
-            const today = new Date(now)
-            today.setHours(0, 0, 0, 0)
-            autoDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
-          } else if (currentDayOfWeek === 0 && mapping.uiDay === 0) { // Today is Sunday
-            const today = new Date(now)
-            today.setHours(0, 0, 0, 0)
-            autoDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
-          } else if (mapping.uiDay === 6) { // Saturday - find next Saturday
-            const daysUntilSaturday = (6 - currentDayOfWeek + 7) % 7 || 7
-            const saturday = new Date(now)
-            saturday.setDate(now.getDate() + daysUntilSaturday)
-            saturday.setHours(0, 0, 0, 0)
-            autoDate = `${saturday.getFullYear()}-${String(saturday.getMonth() + 1).padStart(2, '0')}-${String(saturday.getDate()).padStart(2, '0')}`
-          } else if (mapping.uiDay === 0) { // Sunday - find next Sunday
-            const daysUntilSunday = (0 - currentDayOfWeek + 7) % 7 || 7
-            const sunday = new Date(now)
-            sunday.setDate(now.getDate() + daysUntilSunday)
-            sunday.setHours(0, 0, 0, 0)
-            autoDate = `${sunday.getFullYear()}-${String(sunday.getMonth() + 1).padStart(2, '0')}-${String(sunday.getDate()).padStart(2, '0')}`
+          // Calculate the date for this week's Saturday and Sunday
+          if (mapping.uiDay === 6) { // Saturday
+            if (currentDayOfWeek === 6) {
+              // Today is Saturday - use today
+              const today = new Date(now)
+              today.setHours(0, 0, 0, 0)
+              autoDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+            } else if (currentDayOfWeek === 0) {
+              // Today is Sunday - use yesterday (Saturday)
+              const yesterday = new Date(now)
+              yesterday.setDate(now.getDate() - 1)
+              yesterday.setHours(0, 0, 0, 0)
+              autoDate = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`
+            } else {
+              // Other day - find this week's Saturday (could be past or future)
+              const daysUntilSaturday = (6 - currentDayOfWeek + 7) % 7
+              const saturday = new Date(now)
+              saturday.setDate(now.getDate() + (daysUntilSaturday === 0 ? -7 : daysUntilSaturday))
+              saturday.setHours(0, 0, 0, 0)
+              autoDate = `${saturday.getFullYear()}-${String(saturday.getMonth() + 1).padStart(2, '0')}-${String(saturday.getDate()).padStart(2, '0')}`
+            }
+          } else if (mapping.uiDay === 0) { // Sunday
+            if (currentDayOfWeek === 0) {
+              // Today is Sunday - use today
+              const today = new Date(now)
+              today.setHours(0, 0, 0, 0)
+              autoDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+            } else if (currentDayOfWeek === 6) {
+              // Today is Saturday - use tomorrow (Sunday)
+              const tomorrow = new Date(now)
+              tomorrow.setDate(now.getDate() + 1)
+              tomorrow.setHours(0, 0, 0, 0)
+              autoDate = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, '0')}-${String(tomorrow.getDate()).padStart(2, '0')}`
+            } else {
+              // Other day - find this week's Sunday
+              const daysUntilSunday = (0 - currentDayOfWeek + 7) % 7
+              const sunday = new Date(now)
+              sunday.setDate(now.getDate() + (daysUntilSunday === 0 ? 0 : daysUntilSunday))
+              sunday.setHours(0, 0, 0, 0)
+              autoDate = `${sunday.getFullYear()}-${String(sunday.getMonth() + 1).padStart(2, '0')}-${String(sunday.getDate()).padStart(2, '0')}`
+            }
           }
           
           // Use database date first, then auto-calculated date
-          const finalDate = selectedDateFromDB || autoDate
+          // BUT: If database date is old (not today or this week), use auto-calculated date instead
+          let finalDate = selectedDateFromDB || autoDate
+          
+          // Check if database date is outdated (more than 7 days old or not matching current week)
+          if (selectedDateFromDB && autoDate) {
+            const dbDate = new Date(selectedDateFromDB + 'T00:00:00')
+            const autoDateObj = new Date(autoDate + 'T00:00:00')
+            const now = getPhilippineTime()
+            const today = new Date(now)
+            today.setHours(0, 0, 0, 0)
+            
+            // If database date is more than 7 days old, use auto-calculated date
+            const daysDiff = Math.abs((dbDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
+            if (daysDiff > 7) {
+              console.log(`🔄 Database date ${selectedDateFromDB} is outdated (${daysDiff.toFixed(0)} days old), using auto-calculated date ${autoDate}`)
+              finalDate = autoDate
+              // Update database with new date
+              await supabase
+                .from('day_config')
+                .update({ selected_date: autoDate, updated_at: new Date().toISOString() })
+                .eq('id', config.id)
+                .then(() => {
+                  console.log(`💾 Updated outdated date to ${autoDate} in database for ${dayName}`)
+                })
+            }
+          }
           
           // If no date in database but we have an auto date, save it to database
           if (!selectedDateFromDB && autoDate) {
@@ -1567,35 +1620,79 @@ export default function Home() {
           
           let selectedDateFromDB = emptyConfig?.selected_date || null
           
-          // Auto-sync date if not in database
+          // Auto-sync date - always calculate current week's Saturday/Sunday
           const now = getPhilippineTime()
           const currentDayOfWeek = now.getDay()
           let autoDate: string | null = null
           
-          if (currentDayOfWeek === 6 && mapping.uiDay === 6) { // Today is Saturday
-            const today = new Date(now)
-            today.setHours(0, 0, 0, 0)
-            autoDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
-          } else if (currentDayOfWeek === 0 && mapping.uiDay === 0) { // Today is Sunday
-            const today = new Date(now)
-            today.setHours(0, 0, 0, 0)
-            autoDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
-          } else if (mapping.uiDay === 6) { // Saturday - find next Saturday
-            const daysUntilSaturday = (6 - currentDayOfWeek + 7) % 7 || 7
-            const saturday = new Date(now)
-            saturday.setDate(now.getDate() + daysUntilSaturday)
-            saturday.setHours(0, 0, 0, 0)
-            autoDate = `${saturday.getFullYear()}-${String(saturday.getMonth() + 1).padStart(2, '0')}-${String(saturday.getDate()).padStart(2, '0')}`
-          } else if (mapping.uiDay === 0) { // Sunday - find next Sunday
-            const daysUntilSunday = (0 - currentDayOfWeek + 7) % 7 || 7
-            const sunday = new Date(now)
-            sunday.setDate(now.getDate() + daysUntilSunday)
-            sunday.setHours(0, 0, 0, 0)
-            autoDate = `${sunday.getFullYear()}-${String(sunday.getMonth() + 1).padStart(2, '0')}-${String(sunday.getDate()).padStart(2, '0')}`
+          // Calculate the date for this week's Saturday and Sunday
+          if (mapping.uiDay === 6) { // Saturday
+            if (currentDayOfWeek === 6) {
+              // Today is Saturday - use today
+              const today = new Date(now)
+              today.setHours(0, 0, 0, 0)
+              autoDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+            } else if (currentDayOfWeek === 0) {
+              // Today is Sunday - use yesterday (Saturday)
+              const yesterday = new Date(now)
+              yesterday.setDate(now.getDate() - 1)
+              yesterday.setHours(0, 0, 0, 0)
+              autoDate = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`
+            } else {
+              // Other day - find this week's Saturday (could be past or future)
+              const daysUntilSaturday = (6 - currentDayOfWeek + 7) % 7
+              const saturday = new Date(now)
+              saturday.setDate(now.getDate() + (daysUntilSaturday === 0 ? -7 : daysUntilSaturday))
+              saturday.setHours(0, 0, 0, 0)
+              autoDate = `${saturday.getFullYear()}-${String(saturday.getMonth() + 1).padStart(2, '0')}-${String(saturday.getDate()).padStart(2, '0')}`
+            }
+          } else if (mapping.uiDay === 0) { // Sunday
+            if (currentDayOfWeek === 0) {
+              // Today is Sunday - use today
+              const today = new Date(now)
+              today.setHours(0, 0, 0, 0)
+              autoDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+            } else if (currentDayOfWeek === 6) {
+              // Today is Saturday - use tomorrow (Sunday)
+              const tomorrow = new Date(now)
+              tomorrow.setDate(now.getDate() + 1)
+              tomorrow.setHours(0, 0, 0, 0)
+              autoDate = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, '0')}-${String(tomorrow.getDate()).padStart(2, '0')}`
+            } else {
+              // Other day - find this week's Sunday
+              const daysUntilSunday = (0 - currentDayOfWeek + 7) % 7
+              const sunday = new Date(now)
+              sunday.setDate(now.getDate() + (daysUntilSunday === 0 ? 0 : daysUntilSunday))
+              sunday.setHours(0, 0, 0, 0)
+              autoDate = `${sunday.getFullYear()}-${String(sunday.getMonth() + 1).padStart(2, '0')}-${String(sunday.getDate()).padStart(2, '0')}`
+            }
           }
           
           // Use database date first, then auto-calculated date
-          const finalDateEmpty = selectedDateFromDB || autoDate
+          // BUT: If database date is old (not today or this week), use auto-calculated date instead
+          let finalDateEmpty = selectedDateFromDB || autoDate
+          
+          // Check if database date is outdated (more than 7 days old)
+          if (selectedDateFromDB && autoDate) {
+            const dbDate = new Date(selectedDateFromDB + 'T00:00:00')
+            const now = getPhilippineTime()
+            const today = new Date(now)
+            today.setHours(0, 0, 0, 0)
+            
+            // If database date is more than 7 days old, use auto-calculated date
+            const daysDiff = Math.abs((dbDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
+            if (daysDiff > 7) {
+              console.log(`🔄 Database date ${selectedDateFromDB} is outdated (${daysDiff.toFixed(0)} days old), using auto-calculated date ${autoDate}`)
+              finalDateEmpty = autoDate
+              // Update database with new date
+              if (emptyConfig) {
+                await supabase
+                  .from('day_config')
+                  .update({ selected_date: autoDate, updated_at: new Date().toISOString() })
+                  .eq('id', emptyConfig.id)
+              }
+            }
+          }
           
           // If no date in database but we have an auto date, save it to database
           if (!selectedDateFromDB && autoDate && emptyConfig) {

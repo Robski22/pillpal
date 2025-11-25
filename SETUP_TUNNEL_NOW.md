@@ -33,7 +33,8 @@ On your Pi:
 
 ```bash
 # Start tunnel - this will give you a public URL
-cloudflared tunnel --url ws://localhost:8765
+# IMPORTANT: Use http:// NOT ws:// - Cloudflare Tunnel doesn't support ws:// directly
+cloudflared tunnel --url http://localhost:8765
 ```
 
 **You'll see output like:**
@@ -126,7 +127,7 @@ sudo apt update && sudo apt install ngrok
 
 ### Start tunnel:
 ```bash
-# On Pi
+# On Pi (ngrok supports WebSocket directly)
 ngrok http 8765
 ```
 
@@ -140,7 +141,7 @@ ngrok http 8765
 
 - [ ] Cloudflare tunnel installed on Pi
 - [ ] Pi server running (`python3 pi_server_pca9685.py`)
-- [ ] Tunnel started (`cloudflared tunnel --url ws://localhost:8765`)
+- [ ] Tunnel started (`cloudflared tunnel --url http://localhost:8765`)
 - [ ] Copied tunnel URL
 - [ ] Added `NEXT_PUBLIC_PI_WEBSOCKET_URL` to Vercel (with `wss://`)
 - [ ] Redeployed on Vercel

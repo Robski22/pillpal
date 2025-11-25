@@ -15,6 +15,19 @@ let urlRefreshInterval: NodeJS.Timeout | null = null
 const URL_REFRESH_INTERVAL = 60000 // Check for URL changes every 60 seconds
 let currentUrl: string | null = null
 
+// Normalize WebSocket URL - remove trailing slashes and ensure proper format
+function normalizeWebSocketUrl(url: string): string {
+  if (!url) return url
+  // Remove trailing slashes
+  let normalized = url.trim().replace(/\/+$/, '')
+  // Ensure it starts with ws:// or wss://
+  if (!normalized.startsWith('ws://') && !normalized.startsWith('wss://')) {
+    console.warn('⚠️ Invalid WebSocket URL format, adding ws:// prefix')
+    normalized = 'ws://' + normalized
+  }
+  return normalized
+}
+
 // Fetch WebSocket URL from API at runtime (not build-time!)
 async function getWebSocketUrl(): Promise<string> {
   try {
@@ -26,8 +39,16 @@ async function getWebSocketUrl(): Promise<string> {
         'Pragma': 'no-cache'
       }
     })
+    
+    if (!response.ok) {
+      throw new Error(`API returned ${response.status}: ${response.statusText}`)
+    }
+    
     const data = await response.json()
-    const url = data.url || process.env.NEXT_PUBLIC_PI_WEBSOCKET_URL || 'ws://192.168.1.45:8765'
+    let url = data.url || process.env.NEXT_PUBLIC_PI_WEBSOCKET_URL || 'ws://192.168.1.45:8765'
+    
+    // Normalize the URL (remove trailing slashes, etc.)
+    url = normalizeWebSocketUrl(url)
     
     // Validate URL format
     if (!url || url === 'ws://192.168.1.45:8765') {
@@ -38,14 +59,16 @@ async function getWebSocketUrl(): Promise<string> {
     return url
   } catch (error) {
     console.error('❌ Error fetching WebSocket URL:', error)
-    return process.env.NEXT_PUBLIC_PI_WEBSOCKET_URL || 'ws://192.168.1.45:8765'
+    let fallbackUrl = process.env.NEXT_PUBLIC_PI_WEBSOCKET_URL || 'ws://192.168.1.45:8765'
+    return normalizeWebSocketUrl(fallbackUrl)
   }
 }
 
 // Check if URL has changed and reconnect if needed
 async function checkUrlAndReconnectIfNeeded() {
   try {
-    const newUrl = await getWebSocketUrl()
+    let newUrl = await getWebSocketUrl()
+    newUrl = normalizeWebSocketUrl(newUrl)
     if (currentUrl && newUrl !== currentUrl && ws && ws.readyState === WebSocket.OPEN) {
       console.log('🔄 Tunnel URL changed! Reconnecting with new URL...')
       console.log('   Old URL:', currentUrl)
@@ -86,29 +109,51 @@ export async function connectToPi(): Promise<void> {
       PI_URL = await getWebSocketUrl()
       if (!PI_URL || PI_URL === 'ws://192.168.1.45:8765') {
         console.warn('⚠️ No valid URL from API, using fallback')
+        PI_URL = process.env.NEXT_PUBLIC_PI_WEBSOCKET_URL || 'ws://192.168.1.45:8765'
+        PI_URL = normalizeWebSocketUrl(PI_URL)
       }
     } catch (error) {
-      console.error('❌ Error fetching WebSocket URL:', error)
-      reject(new Error('Failed to fetch WebSocket URL'))
-      return
+      console.error('❌ Error fetching WebSocket URL, using fallback:', error)
+      // Use fallback URL instead of rejecting
+      PI_URL = process.env.NEXT_PUBLIC_PI_WEBSOCKET_URL || 'ws://192.168.1.45:8765'
+      PI_URL = normalizeWebSocketUrl(PI_URL)
+      console.log('🔧 Using fallback WebSocket URL:', PI_URL)
+    }
+    
+    // Ensure URL is normalized (no trailing slashes)
+    const originalUrl = PI_URL
+    PI_URL = normalizeWebSocketUrl(PI_URL)
+    
+    // Debug: Show if URL was changed
+    if (originalUrl !== PI_URL) {
+      console.log('🔧 URL normalized:', originalUrl, '→', PI_URL)
     }
     
     currentUrl = PI_URL
     console.log('🔧 Using WebSocket URL:', PI_URL)
     console.log('🔌 Connecting to Pi at:', PI_URL)
+    console.log('🔍 URL length:', PI_URL.length, 'Ends with /:', PI_URL.endsWith('/'))
 
     // Set connection timeout
     let connectionTimeout: NodeJS.Timeout | null = setTimeout(() => {
       if (ws && ws.readyState !== WebSocket.OPEN) {
         console.error('⏱️ Connection timeout after 10 seconds')
+        console.error('   Attempted URL:', PI_URL)
         if (ws) {
           ws.close()
         }
-        reject(new Error('Connection timeout'))
+        reject(new Error(`Connection timeout to ${PI_URL}`))
       }
     }, 10000)
 
-    ws = new WebSocket(PI_URL)
+    try {
+      console.log('🚀 Creating WebSocket with normalized URL:', PI_URL)
+      ws = new WebSocket(PI_URL)
+    } catch (error) {
+      console.error('❌ Failed to create WebSocket:', error)
+      reject(new Error(`Failed to create WebSocket: ${error}`))
+      return
+    }
     reconnectAttempts = 0
 
     ws.onopen = () => {
@@ -201,12 +246,22 @@ export async function connectToPi(): Promise<void> {
         clearTimeout(connectionTimeout)
         connectionTimeout = null
       }
-      console.error('❌ WebSocket connection error:', error)
-      reject(new Error('WebSocket connection error'))
+      const errorMsg = `WebSocket connection error to ${PI_URL}. This usually means: 1) The server is not running, 2) The URL is incorrect, 3) Network/firewall issues, or 4) The tunnel is down.`
+      console.error('❌', errorMsg)
+      console.error('   Attempted URL:', PI_URL)
+      console.error('   URL ends with /:', PI_URL.endsWith('/'))
+      console.error('   Error details:', error)
+      console.error('   WebSocket readyState:', ws?.readyState)
+      reject(new Error(errorMsg))
     }
 
     ws.onclose = (event) => {
-      console.log(' Disconnected', event.code, event.reason)
+      const closeReason = event.code === 1006 
+        ? 'Abnormal closure (connection failed or server unreachable)'
+        : event.code === 1000
+        ? 'Normal closure'
+        : `Code ${event.code}`
+      console.log(` Disconnected: ${closeReason}`, event.code, event.reason || 'No reason provided')
       connected = false
       
       // Notify connection status change
@@ -279,14 +334,14 @@ export async function connectToPi(): Promise<void> {
         
         // Handle ping/pong for keepalive
         if (response.type === 'pong' || response.type === 'ping') {
-          console.log('💓 Keepalive pong received')
+          console.log('Keepalive pong received')
           return // Don't process ping/pong as regular messages
         }
         
         // Handle error responses for ping (server doesn't support ping, that's okay)
         if (response.status === 'error' && response.message && response.message.includes('ping')) {
           // Server doesn't support ping messages - that's fine, connection is still alive
-          console.log('💓 Server doesn't support ping (connection still alive)')
+          console.log('Server doesn\'t support ping (connection still alive)')
           return // Ignore this error, connection is working
         }
         
@@ -381,6 +436,30 @@ if (typeof window !== 'undefined') {
   (window as any).checkPiConnection = () => {
     console.log('WebSocket state:', ws?.readyState);
     console.log('Connected:', connected);
+    console.log('Current URL:', currentUrl);
+  };
+  (window as any).testPiUrl = async () => {
+    try {
+      const url = await getWebSocketUrl();
+      console.log('🔍 Testing URL:', url);
+      console.log('   Normalized:', normalizeWebSocketUrl(url));
+      console.log('   Has trailing slash:', url.endsWith('/'));
+      
+      // Try to create a test WebSocket (will fail if server is down, but we can see the error)
+      const testWs = new WebSocket(url);
+      testWs.onopen = () => {
+        console.log('✅ Test connection successful!');
+        testWs.close();
+      };
+      testWs.onerror = (error) => {
+        console.error('❌ Test connection failed:', error);
+      };
+      testWs.onclose = (event) => {
+        console.log('🔌 Test connection closed:', event.code, event.reason);
+      };
+    } catch (error) {
+      console.error('❌ Error testing URL:', error);
+    }
   };
 }
 

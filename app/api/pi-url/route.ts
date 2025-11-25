@@ -20,17 +20,19 @@ function normalizeWebSocketUrl(url: string): string {
 
 export async function GET() {
   try {
-    // Create abort controller for timeout
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 2000) // 2 second timeout
+    // Create a timeout promise for 2 seconds
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Query timeout')), 2000)
+    })
     
-    const { data, error } = await supabase
-      .from('pi_connection_config')
-      .select('websocket_url')
-      .single()
-      .abortSignal(controller.signal)
-
-    clearTimeout(timeoutId)
+    // Race the query against the timeout
+    const { data, error } = await Promise.race([
+      supabase
+        .from('pi_connection_config')
+        .select('websocket_url')
+        .single(),
+      timeoutPromise
+    ]) as { data: any; error: any }
 
     let url = ''
     if (error) {

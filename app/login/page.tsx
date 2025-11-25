@@ -28,6 +28,8 @@ export default function Login() {
   const [resendLoading, setResendLoading] = useState(false)
   const [showResend, setShowResend] = useState(false)
   const [resendCooldown, setResendCooldown] = useState(0)
+  const [showAccessDeniedModal, setShowAccessDeniedModal] = useState(false)
+  const [accessDeniedMessage, setAccessDeniedMessage] = useState('')
 
   // Countdown timer for resend cooldown
   useEffect(() => {
@@ -56,8 +58,10 @@ export default function Login() {
       const checkResult = await checkResponse.json()
       
       if (!checkResult.allowed) {
-        setError(checkResult.message || 'This email is not authorized to access this application')
-        alert(`❌ Access Denied\n\n${checkResult.message || 'This email is not authorized to access this application'}\n\nPlease contact the administrator if you believe this is an error.`)
+        const message = checkResult.message || 'This email is not authorized to access this application'
+        setError(message)
+        setAccessDeniedMessage(message)
+        setShowAccessDeniedModal(true)
         setLoading(false)
         return
       }
@@ -153,8 +157,10 @@ export default function Login() {
         if (!verifyResult.allowed) {
           // Sign out if email is not allowed
           await supabase.auth.signOut()
-          setError('This email is not authorized to access this application')
-          alert(`❌ Access Denied\n\n${verifyResult.message || 'This email is not authorized to access this application'}\n\nYou have been signed out.`)
+          const message = verifyResult.message || 'This email is not authorized to access this application'
+          setError(message)
+          setAccessDeniedMessage(message + '\n\nYou have been signed out.')
+          setShowAccessDeniedModal(true)
           setLoading(false)
           return
         }
@@ -356,6 +362,25 @@ export default function Login() {
           </button>
         </div>
       </div>
+
+      {/* Custom Access Denied Modal - replaces browser alert */}
+      {showAccessDeniedModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+            <div className="mb-4">
+              <h2 className="text-xl font-bold text-gray-800 mb-2">Access Denied</h2>
+              <p className="text-gray-700 whitespace-pre-line">{accessDeniedMessage}</p>
+              <p className="text-gray-600 text-sm mt-3">Please contact the administrator if you believe this is an error.</p>
+            </div>
+            <button
+              onClick={() => setShowAccessDeniedModal(false)}
+              className="w-full px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition font-medium"
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

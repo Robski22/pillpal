@@ -524,14 +524,14 @@ export default function Home() {
         
         if (!result.allowed) {
           // Email not allowed - sign out and redirect
-          alert(`❌ Access Denied\n\n${result.message || 'This email is not authorized to access this application'}\n\nYou will be signed out.`)
+          alert(`Access Denied\n\n${result.message || 'This email is not authorized to access this application'}\n\nYou will be signed out.`)
           await signOut()
           router.push('/login')
         }
       } catch (error) {
         console.error('Error verifying email:', error)
         // On error, still block access for security (strict mode)
-        alert(`❌ Access Denied\n\nUnable to verify email authorization.\n\nYou will be signed out.`)
+        alert(`Access Denied\n\nUnable to verify email authorization.\n\nYou will be signed out.`)
         await signOut()
         router.push('/login')
       }
